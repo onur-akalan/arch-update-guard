@@ -201,6 +201,10 @@ details.more[open] > summary::before { content: "▾ "; }
 .dep .pkg-head { padding: 10px 12px 0; }
 .dep.danger { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
 .dep.warning, .dep.error { border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+.vgroup { border: 1px solid var(--border); border-radius: 10px; margin-top: 12px; }
+.vgroup > summary { font-weight: 600; color: var(--text); }
+.vgroup .more-body { display: grid; gap: 10px; }
+.cve { padding: 10px 12px; border-radius: 8px; background: var(--surface-2); display: grid; gap: 2px; }
 .commits { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 12.5px; }
 
 /* Tables */

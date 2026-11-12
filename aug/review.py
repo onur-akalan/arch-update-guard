@@ -135,7 +135,7 @@ def _extract_json(text: str):
 FALLBACK_MODELS = {"claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
 
 
-def _anthropic(p: dict, system: str, user: str, timeout: int) -> dict:
+def _anthropic(p: dict, system: str, user: str, timeout: int, schema: dict = SCHEMA) -> dict:
     import anthropic  # lives in the project venv
 
     key = get_secret(p["id"])
@@ -143,7 +143,7 @@ def _anthropic(p: dict, system: str, user: str, timeout: int) -> dict:
         raise ReviewError("API anahtarı girilmemiş (Ayarlar → sağlayıcı → Anahtar)")
     client = anthropic.Anthropic(api_key=key, base_url=p.get("base_url") or None,
                                  timeout=float(timeout), max_retries=2)
-    output_config: dict = {"format": {"type": "json_schema", "schema": SCHEMA}}
+    output_config: dict = {"format": {"type": "json_schema", "schema": schema}}
     if p.get("effort"):
         output_config["effort"] = p["effort"]
     kwargs = dict(model=p["model"], max_tokens=16000, system=system,
@@ -178,18 +178,18 @@ def _anthropic(p: dict, system: str, user: str, timeout: int) -> dict:
     return {"data": json.loads(text), "usage": usage, "model": resp.model}
 
 
-def _openai(p: dict, system: str, user: str, timeout: int) -> dict:
+def _openai(p: dict, system: str, user: str, timeout: int, schema: dict = SCHEMA) -> dict:
     body: dict = {"model": p["model"], "messages": [{"role": "system", "content": system},
                                                      {"role": "user", "content": user}]}
     mode = p.get("json_mode") or "json_schema"
     if mode == "json_schema":
         body["response_format"] = {"type": "json_schema",
-                                   "json_schema": {"name": "aur_review", "schema": SCHEMA, "strict": True}}
+                                   "json_schema": {"name": "result", "schema": schema, "strict": True}}
     elif mode == "json_object":
         body["response_format"] = {"type": "json_object"}
-        body["messages"][0]["content"] += "\n\nRespond with only a JSON object with keys verdict, summary, findings."
+        body["messages"][0]["content"] += "\n\nRespond with only a JSON object with keys: " + ", ".join(schema["properties"]) + "."
     else:
-        body["messages"][0]["content"] += "\n\nRespond with only a JSON object with keys verdict, summary, findings."
+        body["messages"][0]["content"] += "\n\nRespond with only a JSON object with keys: " + ", ".join(schema["properties"]) + "."
     headers = {"Content-Type": "application/json"}
     key = get_secret(p["id"])
     if key:
@@ -214,8 +214,8 @@ def _openai(p: dict, system: str, user: str, timeout: int) -> dict:
     return {"data": _extract_json(content), "usage": data.get("usage"), "model": data.get("model", p["model"])}
 
 
-def _claude_code(p: dict, system: str, user: str, timeout: int) -> dict:
-    cmd = ["claude", "-p", "--output-format", "json", "--json-schema", json.dumps(SCHEMA),
+def _claude_code(p: dict, system: str, user: str, timeout: int, schema: dict = SCHEMA) -> dict:
+    cmd = ["claude", "-p", "--output-format", "json", "--json-schema", json.dumps(schema),
            "--tools", "", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "",
            "--system-prompt", system]
     if p.get("model"):
@@ -242,6 +242,27 @@ def _claude_code(p: dict, system: str, user: str, timeout: int) -> dict:
 
 
 PROVIDERS = {"anthropic": _anthropic, "openai": _openai, "claude-code": _claude_code}
+
+
+def call(settings: dict, provider_id: str | None, system: str, user: str, schema: dict) -> dict:
+    """Generic structured call. Returns {"status": "ok", "data", "model", "usage", ...}
+    or {"status": "error", "error"} - never raises."""
+    p = find_provider(settings, provider_id)
+    started = time.time()
+    base = {"provider": p["id"] if p else provider_id, "at": int(started)}
+    if not p:
+        return {**base, "status": "error", "error": "sağlayıcı bulunamadı"}
+    try:
+        if p["type"] in ("anthropic", "openai") and not p.get("model"):
+            raise ReviewError(f"{p['name']}: model adı girilmemiş (Ayarlar → Sağlayıcılar)")
+        res = PROVIDERS[p["type"]](p, system, user, settings["review"]["timeout_seconds"], schema)
+    except ReviewError as e:
+        return {**base, "status": "error", "error": str(e), "seconds": round(time.time() - started, 1)}
+    except Exception as e:
+        return {**base, "status": "error", "error": f"{type(e).__name__}: {e}"[:300],
+                "seconds": round(time.time() - started, 1)}
+    return {**base, "status": "ok", "data": res["data"], "model": res.get("model"), "usage": res.get("usage"),
+            "seconds": round(time.time() - started, 1)}
 
 
 def find_provider(settings: dict, provider_id: str | None = None) -> dict | None:

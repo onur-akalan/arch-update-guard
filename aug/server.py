@@ -16,7 +16,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, check, deps, review, schedule, state, updater
+from . import __version__, check, deps, review, schedule, state, updater, vulnai
 from .config import (SERVER_FILE, WEB_DIR, SettingsError, atomic_write_json, delete_secret, get_secret,
                      load_settings, read_json, save_settings, set_secret, validate_settings)
 
@@ -31,6 +31,7 @@ class App:
         self.check_thread: threading.Thread | None = None
         self.check_error: str | None = None
         self.review_busy: set[str] = set()
+        self.vuln_busy: set[str] = set()
         self.lock = threading.Lock()
 
     # -- background check -------------------------------------------------
@@ -51,6 +52,51 @@ class App:
         except Exception as e:
             log.exception("check failed")
             self.check_error = f"{type(e).__name__}: {e}"
+
+    # -- AI assessment of tracker entries ----------------------------------
+    def analyze_vuln(self, avg: str, package: str, provider_id: str | None) -> dict:
+        report = check.load_report()
+        v = next((x for x in (report or {}).get("vulns", []) if x["avg"] == avg and x["package"] == package), None)
+        if not v:
+            raise ValueError("Kayıt güncel raporda yok.")
+        key = f"{avg}:{package}"
+        with self.lock:
+            if key in self.vuln_busy:
+                raise ValueError("Bu kayıt zaten analiz ediliyor.")
+            self.vuln_busy.add(key)
+        try:
+            settings = load_settings()
+            res = vulnai.analyze(v, report.get("runtime"), settings, provider_id)
+            pid = provider_id or settings["review"]["active_provider"]
+            if res["status"] == "ok":
+                with state.mutate() as st:
+                    st["vuln_ai"][state.vuln_ai_key(v, pid)] = res
+            fresh = check.load_report()
+            for x in fresh["vulns"]:
+                if x["avg"] == avg and x["package"] == package:
+                    x["ai"] = res
+            atomic_write_json(check.REPORT_FILE, fresh)
+            return res
+        finally:
+            with self.lock:
+                self.vuln_busy.discard(key)
+
+    def analyze_all(self) -> int:
+        report = check.load_report() or {"vulns": []}
+        todo = [(v["avg"], v["package"]) for v in report["vulns"]
+                if v.get("evidence_verdict") != "fixed" and not (v.get("ai") or {}).get("status") == "ok"]
+        if not todo:
+            return 0
+
+        def worker():
+            for avg, pkg in todo:
+                try:
+                    self.analyze_vuln(avg, pkg, None)
+                except Exception:
+                    log.exception("analyze %s %s", avg, pkg)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return len(todo)
 
     def busy(self) -> bool:
         return bool(self.check_thread and self.check_thread.is_alive()) or state.check_running()
@@ -100,6 +146,7 @@ def _public_settings(settings: dict) -> dict:
     s = copy.deepcopy(settings)
     for p in s["providers"]:
         p["has_key"] = get_secret(p["id"]) is not None if p["type"] in ("anthropic", "openai") else None
+    s["security"]["has_nvd_key"] = get_secret("nvd") is not None
     return s
 
 
@@ -230,6 +277,7 @@ def make_handler(app: App, port: int):
                 "check_error": app.check_error,
                 "update": updater.update_status(),
                 "reviewing": sorted(app.review_busy),
+                "analyzing": sorted(app.vuln_busy),
             }
 
     # -- POST routes ------------------------------------------------------
@@ -273,7 +321,7 @@ def make_handler(app: App, port: int):
     def r_secret(body):
         pid = body.get("provider")
         settings = load_settings()
-        if not any(p["id"] == pid for p in settings["providers"]):
+        if pid != "nvd" and not any(p["id"] == pid for p in settings["providers"]):
             raise ValueError("Önce sağlayıcıyı kaydet.")
         value = body.get("value")
         if value:
@@ -311,13 +359,20 @@ def make_handler(app: App, port: int):
                                        "note": str(body.get("note") or "")[:500]}
         return {"ok": True}
 
+    def r_vuln_analyze(body):
+        return app.analyze_vuln(body.get("avg"), body.get("package"), body.get("provider"))
+
+    def r_vuln_analyze_all(_):
+        return {"started": app.analyze_all()}
+
     def r_restart(body):
         report = check.load_report()
         if not report:
             raise ValueError("Önce bir kontrol çalıştır.")
         return updater.launch_restart(report, body.get("units") or [])
 
-    ROUTES = {"/api/vuln/ack": r_vuln_ack, "/api/restart": r_restart, "/api/check": r_check, "/api/news/read": r_news_read, "/api/approve": r_approve,
+    ROUTES = {"/api/vuln/analyze": r_vuln_analyze, "/api/vuln/analyze-all": r_vuln_analyze_all,
+              "/api/vuln/ack": r_vuln_ack, "/api/restart": r_restart, "/api/check": r_check, "/api/news/read": r_news_read, "/api/approve": r_approve,
               "/api/unapprove": r_unapprove, "/api/rereview": r_rereview, "/api/settings": r_settings,
               "/api/secret": r_secret, "/api/test-provider": r_test_provider, "/api/update": r_update}
     return Handler
@@ -353,7 +408,7 @@ def serve() -> None:
         while True:
             time.sleep(30)
             if (time.time() - app.last_request > IDLE_EXIT_SECONDS and not app.busy()
-                    and not app.review_busy):
+                    and not app.review_busy and not app.vuln_busy):
                 httpd.shutdown()
                 return
 

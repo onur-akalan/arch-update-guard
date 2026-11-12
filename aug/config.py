@@ -35,6 +35,10 @@ DEFAULT_SETTINGS: dict = {
     "schedule": "daily",  # daily | twice | weekly
     "notifications": True,
     "browser": "chromium-app",  # chromium-app | default
+    "security": {
+        "auto_analyze": True,      # AI-assess active (not fixed / not stale) entries during checks
+        "nvd_budget_seconds": 60,  # time per check spent fetching CVE details from NVD
+    },
     "review": {
         "enabled": True,
         "active_provider": "claude-code",
@@ -135,6 +139,14 @@ def validate_settings(s: dict) -> dict:
     if s["browser"] not in ("chromium-app", "default"):
         raise SettingsError("Geçersiz tarayıcı seçimi.")
     s["notifications"] = bool(s["notifications"])
+    sec = s["security"]
+    sec["auto_analyze"] = bool(sec["auto_analyze"])
+    try:
+        sec["nvd_budget_seconds"] = int(sec["nvd_budget_seconds"])
+    except (TypeError, ValueError):
+        raise SettingsError("NVD süresi bir tam sayı olmalı.")
+    if not 0 <= sec["nvd_budget_seconds"] <= 900:
+        raise SettingsError("NVD süresi 0 ile 900 saniye arasında olmalı.")
     r = s["review"]
     r["enabled"] = bool(r["enabled"])
     for key, lo, hi in (("max_diff_chars", 5000, 1_000_000), ("timeout_seconds", 20, 1800)):

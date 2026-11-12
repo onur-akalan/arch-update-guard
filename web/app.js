@@ -83,7 +83,7 @@ async function refresh() {
 function schedulePoll() {
   clearTimeout(ui.pollTimer);
   const d = ui.data;
-  const fast = d && (d.busy || d.update?.running || (d.reviewing || []).length);
+  const fast = d && (d.busy || d.update?.running || (d.reviewing || []).length || (d.analyzing || []).length);
   ui.pollTimer = setTimeout(refresh, fast ? 2000 : 30000);
 }
 
@@ -165,7 +165,7 @@ function renderStats(r) {
   const aurUp = r.aur.filter((a) => a.new_version);
   const bad = r.aur.filter((a) => ["danger", "warning", "missing"].includes(a.status)).length;
   const unrev = r.aur.filter((a) => a.status === "unreviewed").length;
-  const activeV = r.vulns.filter((v) => !v.stale && !v.ack);
+  const activeV = r.vulns.filter((v) => vulnGroup(v) === "active");
   const highV = activeV.filter((v) => ["Critical", "High"].includes(v.severity)).length;
   const fixable = activeV.filter((v) => v.fix_pending).length;
   const setAside = r.vulns.length - activeV.length;
@@ -176,7 +176,7 @@ function renderStats(r) {
   return `<section class="stats">
     ${stat("repo", "Resmi depo güncellemesi", r.repo.length, `${imp ? `<span>${imp} önemli</span>` : ""}${cve ? `<span>${cve} güvenlik düzeltmesi</span>` : ""}${!imp && !cve ? "imzalı resmi paketler" : ""}`)}
     ${stat("aur", "AUR güncellemesi", aurUp.length, bad ? `<span class="badge warn">${bad} dikkat</span>` : unrev ? `<span>${unrev} incelenmedi</span>` : "sorun bulunmadı")}
-    ${stat("vulns", "Bilinen güvenlik açığı", activeV.length, `${highV ? `<span>${highV} yüksek/kritik</span>` : ""}<span>${fixable} bu güncellemeyle kapanıyor</span>${setAside ? `<span>${setAside} eski/incelenmiş ayrıldı</span>` : ""}`)}
+    ${stat("vulns", "Bilinen güvenlik açığı", activeV.length, `${highV ? `<span>${highV} yüksek/kritik</span>` : ""}<span>${fixable} bu güncellemeyle kapanıyor</span>${setAside ? `<span>${setAside} düzeltilmiş/eski kayıt ayrıldı</span>` : ""}`)}
     ${stat("news", "Yeni Arch haberi", unread, unread ? "son güncellemenden sonra yayımlandı" : latest ? `son haber: ${fmtDay(latest.published)}` : "haber alınamadı")}
   </section>`;
 }
@@ -229,7 +229,7 @@ function renderTabs(r) {
   const tabs = [
     ["aur", "AUR", r.aur.length],
     ["repo", "Resmi depo", r.repo.length],
-    ["vulns", "Güvenlik", r.vulns.filter((v) => !v.stale && !v.ack).length],
+    ["vulns", "Güvenlik", r.vulns.filter((v) => vulnGroup(v) === "active").length],
     ["news", "Haberler", r.news.filter((n) => n.since_last_upgrade && !n.read).length || ""],
     ["system", "Sistem", r.system.pacnew.length || ""],
   ];
@@ -387,38 +387,113 @@ function renderRepo(r) {
 
 function renderVulns(r) {
   if (!r.vulns.length) return `<div class="empty">Kurulu sürümleri etkileyen kayıtlı bir güvenlik açığı yok.</div>`;
-  const usedBy = (v) => {
-    const parts = [];
-    if (v.services?.length) parts.push(`<div class="tags">${v.services.map((s) => `<span class="badge warn" title="Çalışan bir sistem servisi bu kütüphaneyi yüklüyor">⚙ ${esc(s.replace(/\.service$/, ""))}</span>`).join("")}</div>`);
-    if (v.explicit) parts.push(`<span class="small">senin kurduğun paket</span>`);
-    if (v.used_by?.length) {
-      const shown = v.used_by.slice(0, 5).map(esc).join(", ");
-      parts.push(`<span class="small muted" title="${esc(v.used_by.join(", "))}">${shown}${v.used_by.length > 5 ? ` +${v.used_by.length - 5}` : ""}</span>`);
-    }
-    return parts.join("") || `<span class="muted small">—</span>`;
-  };
-  const table = (list, mode) => `<div class="table-wrap"><table><thead><tr><th>Önem</th><th>Paket</th><th>Etkilediği</th><th>Düzeltme</th><th>Kayıt</th><th></th></tr></thead><tbody>
-    ${list.map((v) => `<tr><td><span class="badge ${mode === "active" ? AVG_SEV[v.severity] || "neutral" : "neutral"}">${AVG_SEV_TR[v.severity] || esc(v.severity)}</span></td>
-      <td><b>${esc(v.package)}</b><div class="mono muted small">${esc(v.installed)}</div></td>
-      <td style="max-width:360px">${usedBy(v)}</td>
-      <td>${v.fix_pending ? `<span class="badge ok">güncellemede: ${esc(v.fixed)}</span>` : v.fixed ? `<span class="mono">${esc(v.fixed)}</span>` : `<span class="muted">${mode === "stale" ? "kaydedilmemiş" : "henüz yok"}</span>`}</td>
-      <td><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.avg)}</a><div class="muted small" title="${esc(v.issues.join(", "))}">${esc(v.issues.slice(0, 2).join(", "))}${v.issue_count > 2 ? ` +${v.issue_count - 2}` : ""} · ${esc(v.type)}</div>
-        ${mode === "acked" && v.ack.note ? `<div class="small">Not: ${esc(v.ack.note)}</div>` : ""}</td>
-      <td>${mode === "acked"
-        ? `<button class="btn sm ghost" data-act="unack" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}">Geri al</button>`
-        : `<button class="btn sm ghost" data-act="ack" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}" title="Bu sürüm için gizle">İnceledim</button>`}</td></tr>`).join("")}
-    </tbody></table></div>`;
-  const active = r.vulns.filter((v) => !v.stale && !v.ack);
-  const acked = r.vulns.filter((v) => v.ack);
-  const stale = r.vulns.filter((v) => v.stale && !v.ack);
-  return `${active.length ? table(active, "active") : `<div class="empty">Etkin bir güvenlik açığı yok.</div>`}
-    <p class="note">Sıralama: önem derecesi, açıklı kütüphaneyi çalışan bir servisin yüklemesi (⚙), düzeltmenin bekleyen güncellemede olması ve etkilenen uygulama sayısı. "Etkilediği" sütunu, senin kurduğun ve bu paketi doğrudan ya da dolaylı kullanan programları gösterir. Düzeltmesi henüz olmayan bir açığı inceleyip önlemini aldıysan "İnceledim" ile gizleyebilirsin; paketin sürümü değişince yeniden görünür.</p>
-    ${stale.length ? `<details class="more" style="margin-top:12px;border:1px solid var(--border);border-radius:8px" data-key="vuln-stale" ${ui.openDetails.has("vuln-stale") ? "open" : ""}>
-      <summary>Büyük olasılıkla eski kayıtlar (${stale.length})</summary>
-      <div class="more-body"><p class="note" style="margin:0">Takipçi bu kayıtlar için düzeltilmiş sürümü hiç girmemiş. CVE'ler önceki yıllara ait ve kurulu sürümün, açığın bildirildiği sürümden daha yeni bir upstream sürümü. Bu tür kayıtlar çoğunlukla düzeltilmiştir ama bu bir tahmindir; emin olmak için kaydın bağlantısındaki CVE'lere bak.</p>${table(stale, "stale")}</div></details>` : ""}
-    ${acked.length ? `<details class="more" style="margin-top:12px;border:1px solid var(--border);border-radius:8px" data-key="vuln-acked" ${ui.openDetails.has("vuln-acked") ? "open" : ""}>
-      <summary>İncelediğin ve gizlediğin kayıtlar (${acked.length})</summary><div class="more-body">${table(acked, "acked")}</div></details>` : ""}
-    <p class="note">Kaynak: Arch Linux güvenlik takipçisi (security.archlinux.org). Takipçi gönüllülerce tutulur ve eksik ya da gecikmeli olabilir; "henüz yok" yazan açıklar için yapılacak bir şey yoksa Arch'ın düzeltmeyi yayımlamasını beklemek gerekir.</p>`;
+  const groups = { active: [], fixed: [], stale: [], acked: [] };
+  for (const v of r.vulns) groups[vulnGroup(v)].push(v);
+  const analyzing = new Set(ui.data.analyzing || []);
+  const pendingAi = r.vulns.filter((v) => v.evidence_verdict !== "fixed" && v.ai?.status !== "ok").length;
+  const section = (key, title, intro, list) => !list.length ? "" : `
+    <details class="more vgroup" data-key="vg-${key}" ${key === "active" || ui.openDetails.has("vg-" + key) ? "open" : ""}>
+      <summary>${title} (${list.length})</summary>
+      <div class="more-body">${intro ? `<p class="note" style="margin:0">${intro}</p>` : ""}${list.map((v) => renderVuln(v, key, analyzing)).join("")}</div>
+    </details>`;
+  return `<div class="toolbar">
+      <button class="btn sm" data-act="analyze-all" ${pendingAi && !analyzing.size ? "" : "disabled"}>${analyzing.size ? `Analiz ediliyor… (${analyzing.size})` : `Yapay zekâya değerlendirt (${pendingAi})`}</button>
+      <span class="muted small">${r.cve_pending ? `${r.cve_pending} CVE'nin ayrıntısı NVD'den sonraki kontrollerde gelecek. ` : ""}Kayıtlar: Arch güvenlik takipçisi; CVE ayrıntıları: NVD.</span>
+    </div>
+    ${groups.active.length ? "" : `<div class="empty" style="padding:12px">Etkin bir güvenlik açığı yok.</div>`}
+    ${section("active", "Etkin açıklar", "Önem derecesine, çalışan bir servisin paketi yüklemesine (⚙) ve düzeltmenin bekleyen güncellemede olmasına göre sıralı.", groups.active)}
+    ${section("fixed", "Düzeltildiği doğrulananlar", "NVD sürüm verisine ya da CVE açıklamasına göre kurulu upstream sürüm düzeltmeyi içeriyor; takipçi kaydı güncellenmemiş.", groups.fixed)}
+    ${section("stale", "Büyük olasılıkla eski kayıtlar", "Takipçi düzeltme sürümünü girmemiş, CVE'ler önceki yıllara ait ve kurulu upstream sürüm açığın bildirildiği sürümden yeni. Bu bir tahmindir; yapay zekâ değerlendirmesiyle teyit edebilirsin.", groups.stale)}
+    ${section("acked", "İncelediğin ve gizlediğin kayıtlar", "Paket sürümü değişince yeniden görünürler.", groups.acked)}`;
+}
+
+function vulnGroup(v) {
+  if (v.ack) return "acked";
+  if (v.evidence_verdict === "fixed") return "fixed";
+  if (v.stale) return "stale";
+  return "active";
+}
+
+const AV_TR = { NETWORK: "ağdan", ADJACENT_NETWORK: "yerel ağdan", ADJACENT: "yerel ağdan", LOCAL: "yerel", PHYSICAL: "fiziksel erişimle" };
+const ASSESS = { affected: ["danger", "Etkileniyor"], fixed: ["ok", "Düzeltilmiş"], not_applicable: ["ok", "Bu sistemi etkilemiyor"], unknown: ["neutral", "Belirsiz"] };
+const RISK_TR = { critical: ["danger", "kritik risk"], high: ["danger", "yüksek risk"], medium: ["warn", "orta risk"], low: ["info", "düşük risk"], none: ["ok", "risk yok"] };
+const CONF_TR = { high: "yüksek güven", medium: "orta güven", low: "düşük güven" };
+
+function renderVuln(v, group, analyzing) {
+  const sevCls = group === "active" ? AVG_SEV[v.severity] || "neutral" : "neutral";
+  const key = `${v.avg}:${v.package}`;
+  const busy = analyzing.has(key);
+  const ai = v.ai;
+  const ev = v.evidence_verdict;
+  const fixBadge = v.fix_pending ? `<span class="badge ok">düzeltme güncellemede: ${esc(v.fixed)}</span>`
+    : ev === "fixed" ? `<span class="badge ok">kurulu sürümde düzeltilmiş (kanıtlı)</span>`
+    : ev === "open" ? `<span class="badge danger">kurulu sürüm etkileniyor (kanıtlı)</span>`
+    : v.fixed ? `<span class="badge neutral">düzeltme: ${esc(v.fixed)}</span>` : "";
+  const aiBadge = ai?.status === "ok" ? `<span class="badge ${ASSESS[ai.assessment][0]}">Yapay zekâ: ${ASSESS[ai.assessment][1]}</span>` : "";
+  const users = [
+    v.services?.length ? `<span class="tags">${v.services.map((s) => `<span class="badge warn" title="Çalışan bir sistem servisi bu paketi yüklüyor">⚙ ${esc(s.replace(/\.service$/, ""))}</span>`).join("")}</span>` : "",
+    v.explicit ? `<span>senin kurduğun paket</span>` : "",
+    v.used_by?.length ? `<span title="${esc(v.used_by.join(", "))}">kullanan: ${v.used_by.slice(0, 6).map(esc).join(", ")}${v.used_by.length > 6 ? ` +${v.used_by.length - 6}` : ""}</span>` : "",
+  ].filter(Boolean).join(" · ");
+  const dk = `vuln:${key}`;
+  const providers = ui.settings?.providers || [];
+  return `<article class="pkg vuln">
+    <div class="pkg-head">
+      <span class="badge ${sevCls}">${AVG_SEV_TR[v.severity] || esc(v.severity)}</span>
+      <span class="pkg-name">${esc(v.package)}</span><span class="ver">${esc(v.installed)}</span>
+      ${fixBadge}${aiBadge}
+      <span class="spacer"></span>
+      <a class="small" href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.avg)} ↗</a>
+    </div>
+    <div class="pkg-body">
+      <div class="meta-grid"><span>${esc(v.type)}</span><span>${v.issues.map(esc).join(", ")}</span>${users ? `<span>${users}</span>` : ""}</div>
+      ${renderVulnAi(ai)}
+      <div class="pkg-actions">
+        <button class="btn sm ${ai?.status === "ok" ? "ghost" : ""}" data-act="analyze" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}" ${busy ? "disabled" : ""}>${busy ? "Analiz ediliyor…" : ai?.status === "ok" ? "Yeniden değerlendirt" : "Yapay zekâya değerlendirt"}</button>
+        ${providers.length > 1 ? `<select class="input" style="height:28px" data-vprovider-for="${esc(key)}">${providers.map((p) => `<option value="${esc(p.id)}" ${p.id === ui.settings.review.active_provider ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>` : ""}
+        ${group === "acked"
+          ? `<button class="btn sm ghost" data-act="unack" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}">Geri al</button><span class="small muted">${v.ack.note ? "Not: " + esc(v.ack.note) : ""}</span>`
+          : `<button class="btn sm ghost" data-act="ack" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}">İnceledim, gizle</button>`}
+      </div>
+    </div>
+    <details class="more" data-key="${esc(dk)}" ${ui.openDetails.has(dk) ? "open" : ""}>
+      <summary>CVE ayrıntıları (${v.cves?.length || v.issue_count})</summary>
+      <div class="more-body">${(v.cves || []).map(renderCve).join("") || `<p class="muted">Ayrıntı yok.</p>`}</div>
+    </details>
+  </article>`;
+}
+
+function renderVulnAi(ai) {
+  if (!ai) return "";
+  if (ai.status !== "ok") return `<div class="verdict"><b>Değerlendirme yapılamadı:</b> ${esc(ai.error)}</div>`;
+  const [rc, rl] = RISK_TR[ai.risk] || ["neutral", ai.risk];
+  return `<div class="verdict">
+    <span class="badge ${ASSESS[ai.assessment][0]}">${ASSESS[ai.assessment][1]}</span> <span class="badge ${rc}">${rl}</span>
+    ${ai.fixed_in ? `<span class="badge neutral">upstream düzeltme: ${esc(ai.fixed_in)}</span>` : ""}
+    <div style="margin-top:6px">${esc(ai.summary)}</div>
+    ${ai.actions?.length ? `<ul style="margin:6px 0 0;padding-left:18px">${ai.actions.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>` : ""}
+    ${ai.reasoning ? `<details style="margin-top:6px"><summary class="small muted" style="cursor:pointer">Gerekçe</summary><p class="small" style="margin:4px 0 0">${esc(ai.reasoning)}</p></details>` : ""}
+    <div class="who">${esc(ai.provider)} · ${esc(ai.model || "")} · ${CONF_TR[ai.confidence] || ""} · ${ai.seconds ?? "?"} sn · ${fmtDate(ai.at)} · doğrulanmamış yorum; modelin bilgisi bir tarihe kadar günceldir</div>
+  </div>`;
+}
+
+function renderCve(c) {
+  const i = c.info;
+  const e = c.evidence;
+  if (!i) return `<div class="cve"><b>${esc(c.id)}</b> <span class="muted small">NVD ayrıntısı henüz alınmadı</span> · <a class="small" href="https://nvd.nist.gov/vuln/detail/${esc(c.id)}" target="_blank" rel="noopener">NVD ↗</a></div>`;
+  const cv = i.cvss || {};
+  const evBadge = !e ? "" : e.affected === true ? `<span class="badge danger">kurulu sürüm etkileniyor</span>`
+    : e.affected === false ? `<span class="badge ok">kurulu sürümde düzeltilmiş</span>` : `<span class="badge neutral">sürüm bilgisi yok</span>`;
+  const patches = (i.references || []).filter((r) => (r.tags || []).some((t) => ["Patch", "Release Notes", "Vendor Advisory"].includes(t))).slice(0, 4);
+  return `<div class="cve">
+    <div><b>${esc(c.id)}</b> ${cv.score != null ? `<span class="badge ${cv.score >= 7 ? "danger" : cv.score >= 4 ? "warn" : "info"}">CVSS ${cv.score}</span>` : ""}
+      ${cv.attack_vector ? `<span class="badge neutral">${AV_TR[cv.attack_vector] || esc(cv.attack_vector)}</span>` : ""}
+      ${cv.user_interaction === "REQUIRED" ? `<span class="badge neutral">kullanıcı etkileşimi gerekir</span>` : ""}
+      ${evBadge} <span class="muted small">${e ? esc(e.source) : ""}${e?.fixed_in?.length ? ` · düzeltme: ${e.fixed_in.map(esc).join(", ")}` : ""}</span></div>
+    <p class="small" style="margin:4px 0">${esc(i.description)}</p>
+    <div class="small muted">NVD durumu: ${esc(i.status || "?")} · yayın: ${esc(String(i.published || "").slice(0, 10))} · <a href="https://nvd.nist.gov/vuln/detail/${esc(c.id)}" target="_blank" rel="noopener">NVD ↗</a>
+      ${patches.map((p) => ` · <a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(new URL(p.url).hostname)}</a>`).join("")}</div>
+  </div>`;
 }
 
 function renderNews(r) {
@@ -511,6 +586,8 @@ document.addEventListener("click", async (ev) => {
     else if (act === "update") await startUpdate();
     else if (act === "restart") await restartServices();
     else if (act === "ack") await ackVuln(t.dataset.avg, t.dataset.pkg);
+    else if (act === "analyze") await analyzeVuln(t.dataset.avg, t.dataset.pkg);
+    else if (act === "analyze-all") { const r = await api("/api/vuln/analyze-all", {}); toast(r.started ? `${r.started} kayıt sırayla değerlendiriliyor` : "Değerlendirilecek kayıt yok"); await refresh(); }
     else if (act === "unack") { await api("/api/vuln/ack", { avg: t.dataset.avg, package: t.dataset.pkg, undo: true }); await refresh(); }
   } catch (e) {
     toast(e.message, true);
@@ -614,12 +691,25 @@ async function startUpdate() {
   await refresh();
 }
 
+async function analyzeVuln(avg, pkg) {
+  const sel = document.querySelector(`[data-vprovider-for="${CSS.escape(avg + ":" + pkg)}"]`);
+  toast(`${pkg} değerlendiriliyor…`);
+  const p = api("/api/vuln/analyze", { avg, package: pkg, provider: sel ? sel.value : undefined });
+  setTimeout(refresh, 300);
+  const res = await p;
+  toast(res.status === "ok" ? `${pkg}: değerlendirme tamamlandı` : `${pkg}: ${res.error}`, res.status !== "ok");
+  await refresh();
+}
+
 async function ackVuln(avg, pkg) {
   const ok = await confirmDialog(`${pkg} · ${avg} gizlensin mi?`,
     `<p style="margin:0">Kayıt, <b>${esc(pkg)}</b> paketinin şu anki sürümü için listeden kalkar. Paket güncellenince yeniden kontrol edilir.</p>
      <label class="field"><span>Not (isteğe bağlı): neden güvenli ya da ne önlem aldın?</span><input class="input" id="confirm-input" placeholder="örn. upstream 1.7.1'de düzeltilmiş" autocomplete="off"></label>`);
   if (!ok) return;
-  await api("/api/vuln/ack", { avg, package: pkg, note: $("#confirm-input")?.value || "" });
+  const v = ui.data.report.vulns.find((x) => x.avg === avg && x.package === pkg);
+  const typed = $("#confirm-input")?.value || "";
+  const note = typed || (v?.ai?.status === "ok" ? `Yapay zekâ: ${v.ai.summary}` : "");
+  await api("/api/vuln/ack", { avg, package: pkg, note });
   toast("Gizlendi");
   await refresh();
 }
@@ -675,6 +765,15 @@ function renderSettings() {
       </div>
       <p class="help">İnceleme yapılamazsa (hata, zaman aşımı, ret) paket "İncelenmedi" sayılır ve onayın olmadan kurulmaz.</p>
     </fieldset>
+    <fieldset><legend>Güvenlik açıkları</legend>
+      <label class="check"><input type="checkbox" name="auto_analyze" ${s.security.auto_analyze ? "checked" : ""}> Her kontrolde etkin açıkları yapay zekâya otomatik değerlendirt (eski ve düzeltilmiş kayıtlar elle)</label>
+      <div class="field-row" style="align-items:end">
+        <label class="field"><span>NVD'den CVE ayrıntısı çekme süresi (saniye / kontrol)</span><input class="input" type="number" min="0" max="900" name="nvd_budget_seconds" value="${s.security.nvd_budget_seconds}"></label>
+        <label class="field"><span>NVD API anahtarı ${s.security.has_nvd_key ? "· <b>kasada kayıtlı ✓</b>" : "· isteğe bağlı"}</span><input class="input" type="password" id="nvd-key" placeholder="${s.security.has_nvd_key ? "değiştirmek için yeni anahtar" : "nvd.nist.gov/developers/request-an-api-key"}" autocomplete="off"></label>
+        <div style="display:flex;gap:8px"><button type="button" class="btn sm" data-nvd="save">Kaydet</button>${s.security.has_nvd_key ? `<button type="button" class="btn sm ghost" data-nvd="clear">Sil</button>` : ""}</div>
+      </div>
+      <p class="help">Değerlendirme, Yapay zekâ incelemesi bölümünde seçili sağlayıcıyı kullanır. NVD anahtarsız istemcilere 30 saniyede 5 istek izin verir; ayrıntılar önbelleğe alınır ve eksikler sonraki kontrollerde tamamlanır. Ücretsiz bir anahtarla sınır 10 kat artar.</p>
+    </fieldset>
     <fieldset><legend>Sağlayıcılar</legend>
       <div id="providers" style="display:grid;gap:10px">${s.providers.map(providerForm).join("")}</div>
       <div><button type="button" class="btn sm" id="add-provider">+ Sağlayıcı ekle</button></div>
@@ -723,6 +822,7 @@ function collectSettings() {
   s.review.active_provider = f.active_provider.value;
   s.review.max_diff_chars = Number(f.max_diff_chars.value);
   s.review.timeout_seconds = Number(f.timeout_seconds.value);
+  s.security = { auto_analyze: f.auto_analyze.checked, nvd_budget_seconds: Number(f.nvd_budget_seconds.value) };
   s.providers = [...document.querySelectorAll("#providers .provider")].map((el) => {
     const p = { id: el.dataset.pid };
     el.querySelectorAll("[data-f]").forEach((i) => (p[i.dataset.f] = i.value));
@@ -743,6 +843,19 @@ $("#settings-body").addEventListener("change", (ev) => {
 });
 
 $("#settings-body").addEventListener("click", async (ev) => {
+  const n = ev.target.closest("[data-nvd]");
+  if (n) {
+    try {
+      const value = n.dataset.nvd === "save" ? $("#nvd-key").value.trim() : "";
+      if (n.dataset.nvd === "save" && !value) return toast("Önce anahtarı yapıştır", true);
+      await saveSettings(false);
+      await api("/api/secret", { provider: "nvd", value });
+      await loadSettings();
+      renderSettings();
+      toast(value ? "NVD anahtarı kaydedildi" : "NVD anahtarı silindi");
+    } catch (e) { toast(e.message, true); }
+    return;
+  }
   const b = ev.target.closest("[data-pact]");
   if (!b) return;
   const card = b.closest(".provider");

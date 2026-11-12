@@ -13,6 +13,8 @@ Arch Linux için yerel bir güncelleme panosu. Resmi depo ve AUR güncellemeleri
 | Arch haberleri | archlinux.org/feeds/news | Son güncellemenden sonra çıkan haberi okuduğunu onaylamadan güncelleme başlamaz. |
 | Yeni AUR bağımlılıkları | `.SRCINFO` depends/makedepends farkı | Güncelleme kurulu olmayan bir AUR paketini getiriyorsa o paket de baştan sona incelenir (2 seviyeye kadar). |
 | Güvenlik açıkları | security.archlinux.org | Kurulu sürümleri etkileyen kayıtlar; hangi uygulamaları ve çalışan servisleri etkilediği, bekleyen güncellemenin düzeltip düzeltmediği. |
+| Düzeltme kanıtı | Arch PKGBUILD, NVD, CVE açıklaması | Sırasıyla: Arch paketi CVE adıyla yama uyguluyor mu; NVD sürüm aralığı; açıklamadaki "X'ten önceki sürümler". Kanıt "düzeltilmiş" diyorsa kayıt ayrı grupta gösterilir. |
+| Yapay zekâ değerlendirmesi | Seçili sağlayıcı | Kurulu sürüm etkileniyor mu, bu makine için gerçek risk ne, ne yapmalısın. Puan düşük olsa bile etkileniyorsan somut adım önerir. Etkin açıklar her kontrolde, diğerleri istenince değerlendirilir. |
 | Yeniden başlatma | pacman.log, systemd, /proc | Eski kütüphaneyle çalışan servisler ve uygulamalar; bilgisayarın yeniden başlatılması gerekip gerekmediği. |
 | Ağa açık portlar | `ss`, `docker ps` | Dışarıdan erişilebilen dinleyiciler; Docker'ın tüm ağa açtığı portlar. |
 | Sistem | pacman.log, pacdiff, disk | `.pacnew` dosyaları, boş alan. |

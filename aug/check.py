@@ -7,8 +7,8 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from . import aur, deps, feeds, review, rules, runtime, state, system
-from .config import REPORT_FILE, RUNTIME_DIR, atomic_write_json, load_settings, read_json
+from . import aur, cve, deps, feeds, review, rules, runtime, state, system, vulnai
+from .config import REPORT_FILE, RUNTIME_DIR, atomic_write_json, get_secret, load_settings, read_json
 
 log = logging.getLogger("aug")
 
@@ -234,6 +234,44 @@ def _run(settings: dict) -> dict:
                          - (100 if v.get("stale") else 0))
     vulns.sort(key=lambda v: -v["priority"])
 
+    _progress("CVE ayrıntıları alınıyor (NVD)")
+    cve_pending = 0
+    try:
+        all_ids = [c for v in vulns for c in v["issues"]]
+        infos, cve_pending = cve.fetch_many(all_ids, settings["security"]["nvd_budget_seconds"],
+                                            get_secret("nvd"))
+    except Exception as e:
+        infos = {}
+        errors.append(f"NVD'ye ulaşılamadı: {e}")
+    _progress("Arch paket yamaları kontrol ediliyor")
+    for v in vulns:
+        try:
+            patched = cve.arch_patch_evidence(v["package"], v["installed"], v["issues"])
+        except Exception:
+            patched = {}
+        v["cves"] = []
+        for cid in v["issues"]:
+            info = infos.get(cid)
+            ev = patched.get(cid) or (cve.evidence(info, v["package"], v["installed"]) if info else None)
+            v["cves"].append({"id": cid, "info": info, "evidence": ev})
+        v["evidence_verdict"] = cve.verdict(v["cves"])
+        if v["evidence_verdict"] == "open":
+            v["stale"] = False  # hard evidence beats the heuristic
+        ai_key = state.vuln_ai_key(v, settings["review"]["active_provider"])
+        v["ai"] = st["vuln_ai"].get(ai_key)
+
+    if settings["security"]["auto_analyze"]:
+        # Only the entries that are still open: stale and verified-fixed ones are
+        # assessed on demand from the dashboard.
+        todo = [v for v in vulns if not v["ai"] and v["evidence_verdict"] != "fixed" and not v["stale"]]
+        for i, v in enumerate(todo, 1):
+            _progress(f"Yapay zekâ açıkları değerlendiriyor: {v['package']}", i, len(todo))
+            res = vulnai.analyze(v, rt, settings)
+            if res["status"] == "ok":
+                st["vuln_ai"][state.vuln_ai_key(v, settings["review"]["active_provider"])] = res
+            v["ai"] = res
+            state.save(st)
+
     _progress("Sistem durumu okunuyor")
     report = {
         "generated_at": int(time.time()),
@@ -243,6 +281,7 @@ def _run(settings: dict) -> dict:
         "aur": aur_items,
         "news": news,
         "vulns": vulns,
+        "cve_pending": cve_pending,
         "runtime": rt,
         "system": {
             "last_upgrade": last_up.isoformat() if last_up else None,
@@ -273,7 +312,8 @@ def summary(report: dict) -> dict:
         "unread_news": sum(1 for n in report["news"] if n["since_last_upgrade"] and not n["read"]),
         "vulns_fixable": sum(1 for v in report["vulns"] if v["fix_pending"]),
         "critical_vulns": sum(1 for v in report["vulns"]
-                              if v["severity"] in ("Critical", "High") and not v.get("stale")),
+                              if v["severity"] in ("Critical", "High") and not v.get("stale")
+                              and v.get("evidence_verdict") != "fixed"),
     }
 
 
