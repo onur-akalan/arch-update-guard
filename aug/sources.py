@@ -38,6 +38,7 @@ from pathlib import Path
 
 from . import __version__, rules
 from .config import CACHE_DIR, DATA_DIR
+from .i18n import t
 
 log = logging.getLogger("aug")
 
@@ -347,7 +348,7 @@ def _deb(path: Path) -> dict:
     b = _Builder("deb")
     with open(path, "rb") as f:
         if f.read(8) != b"!<arch>\n":
-            raise ValueError("ar başlığı yok")
+            raise ValueError(t("ar başlığı yok"))
         while hdr := f.read(60):
             if len(hdr) < 60:
                 break
@@ -369,7 +370,7 @@ def _seven_zip(path: Path, fmt: str) -> dict:
     r = subprocess.run(["7z", "l", "-slt", "-ba", "-spd", "--", str(path)], capture_output=True,
                        timeout=300, env={"LC_ALL": "C.UTF-8", "PATH": "/usr/bin"})
     if r.returncode != 0:
-        raise ValueError("7z arşivi okuyamadı")
+        raise ValueError(t("7z arşivi okuyamadı"))
     for block in r.stdout.decode("utf-8", "replace").split("\n\n"):
         rec = dict(line.split(" = ", 1) for line in block.splitlines() if " = " in line)
         p = rec.get("Path")
@@ -441,7 +442,7 @@ def inspect(path: Path, name: str) -> dict:
                   cat_override=("script" if head.startswith(b"#!") else "text") if text_like else None)
             m = b.m
     except Exception as e:  # any parser failure means "not inspected", never "clean"
-        m = {"format": "unreadable", "members": {}, "texts": {}, "notes": [f"okunamadı: {e}"[:200]],
+        m = {"format": "unreadable", "members": {}, "texts": {}, "notes": [t("okunamadı: {e}", e=e)[:200]],
              "issues": [], "root": ""}
     return m
 
@@ -693,7 +694,7 @@ def tag_compare(pkgbase: str, new: dict, srcinfo: dict, names: list[str], max_fi
                 download(origin["archive_url"], dest, max_file_mb * 1024 * 1024)
                 git_m = inspect(dest, "git.tar.gz")
                 if git_m["format"] == "unreadable":
-                    raise ValueError("git arşivi açılamadı")
+                    raise ValueError(t("git arşivi açılamadı"))
                 rec.update(compare_with_git(m, git_m))
                 rec["status"] = "ok"
                 shutil.rmtree(work, ignore_errors=True)
@@ -712,10 +713,10 @@ def tag_findings(tc: list[dict], new: dict) -> list[dict]:
     by_file = {s["file"]: (s.get("manifest") or {}) for s in new["sources"]}
     for r in tc:
         if r["status"] == "deferred":
-            out.append(F(rules.INFO, "tag-compare-deferred", "Git etiketiyle karşılaştırma sonraki kontrolde tamamlanacak",
+            out.append(F(rules.INFO, "tag-compare-deferred", t("Git etiketiyle karşılaştırma sonraki kontrolde tamamlanacak"),
                          file=r["file"]))
         elif r["status"] == "failed":
-            out.append(F(rules.INFO, "tag-compare-failed", "Sürüm arşivi git etiketiyle karşılaştırılamadı",
+            out.append(F(rules.INFO, "tag-compare-failed", t("Sürüm arşivi git etiketiyle karşılaştırılamadı"),
                          r.get("error", ""), file=r["file"]))
         if r["status"] != "ok":
             continue
@@ -725,17 +726,17 @@ def tag_findings(tc: list[dict], new: dict) -> list[dict]:
         where = f"{r['repo']} @ {r['tag']}"
         if r["modified"]:
             out.append(F(rules.MEDIUM, "tarball-differs-from-git",
-                         "Sürüm arşivindeki dosyalar git etiketindekinden farklı",
+                         t("Sürüm arşivindeki dosyalar git etiketindekinden farklı"),
                          f"{', '.join(r['modified'][:10])}{' …' if len(r['modified']) > 10 else ''} ({where})",
                          file=r["file"]))
         if bins:
-            out.append(F(rules.MEDIUM, "tarball-only-binary", "Sürüm arşivinde git'te olmayan ikili/veri dosyası var",
+            out.append(F(rules.MEDIUM, "tarball-only-binary", t("Sürüm arşivinde git'te olmayan ikili/veri dosyası var"),
                          f"{', '.join(bins[:10])} ({where})", file=r["file"]))
         if texts:
             scripts = [p for p in texts if members.get(p, {}).get("cat")]
             sev = rules.MEDIUM if scripts else rules.INFO
-            out.append(F(sev, "tarball-only-file", "Sürüm arşivinde git'te olmayan dosya var"
-                         + (" (betik/derleme dosyası dahil)" if scripts else ""),
+            out.append(F(sev, "tarball-only-file", t("Sürüm arşivinde git'te olmayan dosya var")
+                         + (t(" (betik/derleme dosyası dahil)") if scripts else ""),
                          f"{', '.join((scripts or texts)[:10])} ({where})", file=r["file"]))
     return out
 
@@ -814,23 +815,22 @@ def analyze(old: dict | None, new: dict, binary_package: bool, tagcmp: list[dict
     for s in new["sources"]:
         st = s.get("status")
         if st == "download-failed":
-            findings.append(F(rules.INFO, "source-not-inspected", "Kaynak dosya indirilemedi; içi incelenmedi",
+            findings.append(F(rules.INFO, "source-not-inspected", t("Kaynak dosya indirilemedi; içi incelenmedi"),
                               f"{s['file']}: {s.get('error', '')}", file=s["file"]))
         elif st == "deferred":
             findings.append(F(rules.INFO, "source-deferred", "Kaynak dosya hâlâ iniyor; sonraki kontrolde incelenecek",
-                              "Bu kontrolün indirme süresi doldu; indirme kaldığı yerden devam edecek. "
-                              "İnceleme bitene kadar paket otomatik seçilmez.", file=s["file"]))
+                              t("Bu kontrolün indirme süresi doldu; indirme kaldığı yerden devam edecek. "
+                              "İnceleme bitene kadar paket otomatik seçilmez."), file=s["file"]))
         elif st == "too-large":
-            findings.append(F(rules.INFO, "source-too-large", "Kaynak dosya boyut sınırını aşıyor; içi incelenmedi",
-                              f"{s['file']}: {round((s.get('size') or 0) / 1048576)} MB "
-                              "(sınır Ayarlar → Kaynak inceleme bölümünde)", file=s["file"]))
+            findings.append(F(rules.INFO, "source-too-large", t("Kaynak dosya boyut sınırını aşıyor; içi incelenmedi"),
+                              t("{file}: {v1} MB (sınır Ayarlar → Kaynak inceleme bölümünde)", file=s['file'], v1=round((s.get('size') or 0) / 1048576)), file=s["file"]))
         elif st == "vcs":
-            findings.append(F(rules.INFO, "source-vcs", "Kaynak bir git/svn deposu; içeriği derleme anında çekilir, "
-                              "önceden incelenemez", s["url"][:200], file=s["file"]))
+            findings.append(F(rules.INFO, "source-vcs", t("Kaynak bir git/svn deposu; içeriği derleme anında çekilir, "
+                              "önceden incelenemez"), s["url"][:200], file=s["file"]))
         if s.get("verified") is False:
             findings.append(F(rules.MEDIUM, "checksum-mismatch",
-                              "İndirilen kaynak, PKGBUILD'deki sağlama toplamıyla eşleşmiyor",
-                              "Dosya sunucuda değişmiş ya da yolda değiştirilmiş olabilir; makepkg de derlemeyi durdurur.",
+                              t("İndirilen kaynak, PKGBUILD'deki sağlama toplamıyla eşleşmiyor"),
+                              t("Dosya sunucuda değişmiş ya da yolda değiştirilmiş olabilir; makepkg de derlemeyi durdurur."),
                               file=s["file"]))
     has_any_baseline = bool(old)
     for o, s in pair(old, new):
@@ -841,9 +841,9 @@ def analyze(old: dict | None, new: dict, binary_package: bool, tagcmp: list[dict
         members = m["members"]
         for iss in m.get("issues", [])[:5]:
             findings.append(F(rules.HIGH, "archive-path-traversal",
-                              "Arşivde mutlak yol ya da '..' içeren dosya adı var", iss["path"], file=fname))
+                              t("Arşivde mutlak yol ya da '..' içeren dosya adı var"), iss["path"], file=fname))
         if m["format"] == "unreadable":
-            findings.append(F(rules.INFO, "source-unreadable", "Kaynak dosya açılamadı; içi incelenmedi",
+            findings.append(F(rules.INFO, "source-unreadable", t("Kaynak dosya açılamadı; içi incelenmedi"),
                               "; ".join(m.get("notes", [])), file=fname))
         new_paths = set(ch["added"]) if om else set(members)
         mod_paths = set(ch["changed"])
@@ -862,8 +862,8 @@ def analyze(old: dict | None, new: dict, binary_package: bool, tagcmp: list[dict
                 sev = rules.MEDIUM
             else:
                 sev = rules.INFO
-            what = "eklendi" if is_new and om else "değişti" if om else "var"
-            findings.append(F(sev, f"source-{cat}", f"Kaynak arşivinde {CATEGORY_TR[cat]} {what}", p, file=fname))
+            what = t("eklendi") if is_new and om else t("değişti") if om else t("var")
+            findings.append(F(sev, f"source-{cat}", t("Kaynak arşivinde {v0} {what}", v0=t(CATEGORY_TR[cat]), what=what), p, file=fname))
         # setuid / setgid.
         for p in sorted(new_paths | mod_paths):
             rec = members[p]
@@ -874,20 +874,20 @@ def analyze(old: dict | None, new: dict, binary_package: bool, tagcmp: list[dict
                 continue
             sandbox = p.endswith("chrome-sandbox")
             sev = (rules.MEDIUM if sandbox else rules.HIGH) if om else (rules.INFO if sandbox else rules.MEDIUM)
-            findings.append(F(sev, "source-setuid", "Kaynak arşivinde setuid/setgid izinli dosya"
-                              + (" (Electron'un sandbox yardımcısı)" if sandbox else ""), p, file=fname))
+            findings.append(F(sev, "source-setuid", t("Kaynak arşivinde setuid/setgid izinli dosya")
+                              + (t(" (Electron'un sandbox yardımcısı)") if sandbox else ""), p, file=fname))
         # Hidden executables.
         for p in sorted(new_paths):
             rec = members[p]
             if p.split("/")[-1].startswith(".") and rec["type"] == "f" and (rec.get("elf") or rec.get("cat") == "script"):
-                findings.append(F(rules.MEDIUM, "source-hidden-exec", "Kaynak arşivinde gizli (nokta ile başlayan) "
-                                  "çalıştırılabilir dosya", p, file=fname))
+                findings.append(F(rules.MEDIUM, "source-hidden-exec", t("Kaynak arşivinde gizli (nokta ile başlayan) "
+                                  "çalıştırılabilir dosya"), p, file=fname))
         # Compiled binaries appearing in a source tarball (the xz backdoor hid in "test data").
         if om and not binary_package:
             old_elf = any(r.get("elf") for r in om["members"].values())
             new_elf = [p for p in new_paths if members[p].get("elf")]
             if new_elf and not old_elf:
-                findings.append(F(rules.MEDIUM, "source-new-binary", "Kaynak kod arşivine derlenmiş ikili dosya eklendi",
+                findings.append(F(rules.MEDIUM, "source-new-binary", t("Kaynak kod arşivine derlenmiş ikili dosya eklendi"),
                                   ", ".join(sorted(new_elf)[:8]), file=fname))
         # Binary "test data" and build machinery changing in the same release: the
         # shape of the xz attack (payload in tests/files, trigger in m4/).
@@ -899,11 +899,11 @@ def analyze(old: dict | None, new: dict, binary_package: bool, tagcmp: list[dict
                 unverified = [p for p in mach if not tc or p in tc["only_tar"] or p in tc["only_tar_expected"]
                               or p in tc["modified"]]
                 findings.append(F(rules.MEDIUM if unverified else rules.INFO, "test-data-with-build-change",
-                                  "Aynı sürümde hem ikili test/veri dosyaları hem de derleme betikleri değişti "
-                                  "(xz saldırısının biçimi)",
-                                  f"veri: {', '.join(data[:6])}; derleme: {', '.join(mach[:6])}"
-                                  + ("" if unverified else " — derleme dosyaları git etiketindekiyle aynı")
-                                  + (f" — git'te olmayan ya da farklı olanlar: {', '.join(unverified[:6])}"
+                                  t("Aynı sürümde hem ikili test/veri dosyaları hem de derleme betikleri değişti "
+                                  "(xz saldırısının biçimi)"),
+                                  t("veri: {data}; derleme: {build}", data=", ".join(data[:6]), build=", ".join(mach[:6]))
+                                  + ("" if unverified else t(" — derleme dosyaları git etiketindekiyle aynı"))
+                                  + (t(" — git'te olmayan ya da farklı olanlar: {v0}", v0=', '.join(unverified[:6]))
                                      if unverified and tc else ""),
                                   file=fname))
         # Rules on notable text.
@@ -917,7 +917,7 @@ def analyze(old: dict | None, new: dict, binary_package: bool, tagcmp: list[dict
                 if hits >= 25:
                     break
                 hits += 1
-                findings.append(F(sev, code, f"{title} (kaynak arşivinde)", file=f"{fname}: {p}", line=line))
+                findings.append(F(sev, code, t("{title} (kaynak arşivinde)", title=t(title)), file=f"{fname}: {p}", line=line))
         summaries.append(_summary(o, s, ch, m, om))
     findings.extend(tag_findings(tagcmp or [], new))
     return {"findings": findings, "summaries": summaries, "baseline": has_any_baseline}

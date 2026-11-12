@@ -18,6 +18,7 @@ import urllib.request
 
 from . import sources
 from .config import get_secret
+from .i18n import localize_prompt, t
 
 SCHEMA = {
     "type": "object",
@@ -110,12 +111,12 @@ class ReviewError(RuntimeError):
 
 def _validate(data) -> dict:
     if not isinstance(data, dict):
-        raise ReviewError("model yanıtı JSON nesnesi değil")
+        raise ReviewError(t("model yanıtı JSON nesnesi değil"))
     if data.get("verdict") not in ("clean", "suspicious", "malicious"):
-        raise ReviewError(f"geçersiz karar: {data.get('verdict')!r}")
+        raise ReviewError(t("geçersiz karar: {verdict}", verdict=repr(data.get("verdict"))))
     findings = data.get("findings") or []
     if not isinstance(findings, list):
-        raise ReviewError("findings bir liste değil")
+        raise ReviewError(t("findings bir liste değil"))
     clean = []
     for f in findings:
         if isinstance(f, dict):
@@ -137,7 +138,7 @@ def _extract_json(text: str):
         start, end = text.find("{"), text.rfind("}")
         if start >= 0 and end > start:
             return json.loads(text[start:end + 1])
-        raise ReviewError("yanıtta JSON bulunamadı")
+        raise ReviewError(t("yanıtta JSON bulunamadı"))
 
 
 # --- Providers -----------------------------------------------------------
@@ -151,7 +152,7 @@ def _anthropic(p: dict, system: str, user: str, timeout: int, schema: dict = SCH
 
     key = get_secret(p["id"])
     if not key:
-        raise ReviewError("API anahtarı girilmemiş (Ayarlar → sağlayıcı → Anahtar)")
+        raise ReviewError(t("API anahtarı girilmemiş (Ayarlar → sağlayıcı → Anahtar)"))
     client = anthropic.Anthropic(api_key=key, base_url=p.get("base_url") or None,
                                  timeout=float(timeout), max_retries=2)
     output_config: dict = {"format": {"type": "json_schema", "schema": schema}}
@@ -166,24 +167,24 @@ def _anthropic(p: dict, system: str, user: str, timeout: int, schema: dict = SCH
         else:
             resp = client.messages.create(**kwargs)
     except anthropic.AuthenticationError:
-        raise ReviewError("API anahtarı geçersiz")
+        raise ReviewError(t("API anahtarı geçersiz"))
     except anthropic.PermissionDeniedError:
-        raise ReviewError("API anahtarının bu modele erişim izni yok")
+        raise ReviewError(t("API anahtarının bu modele erişim izni yok"))
     except anthropic.NotFoundError:
-        raise ReviewError(f"model bulunamadı: {p['model']}")
+        raise ReviewError(t("model bulunamadı: {model}", model=p['model']))
     except anthropic.RateLimitError:
-        raise ReviewError("istek sınırına takıldı, daha sonra tekrar denenecek")
+        raise ReviewError(t("istek sınırına takıldı, daha sonra tekrar denenecek"))
     except anthropic.BadRequestError as e:
-        raise ReviewError(f"istek reddedildi: {e.message}")
+        raise ReviewError(t("istek reddedildi: {msg}", msg=e.message))
     except anthropic.APIStatusError as e:
-        raise ReviewError(f"API hatası ({e.status_code}): {e.message}")
+        raise ReviewError(t("API hatası ({status_code}): {message}", status_code=e.status_code, message=e.message))
     except anthropic.APIConnectionError:
-        raise ReviewError("API'ye bağlanılamadı")
+        raise ReviewError(t("API'ye bağlanılamadı"))
     if resp.stop_reason == "refusal":
         cat = getattr(getattr(resp, "stop_details", None), "category", None)
-        raise ReviewError(f"model incelemeyi reddetti ({cat or 'kategori yok'})")
+        raise ReviewError(t("model incelemeyi reddetti ({cat})", cat=cat or t("kategori yok")))
     if resp.stop_reason == "max_tokens":
-        raise ReviewError("yanıt yarıda kesildi (max_tokens)")
+        raise ReviewError(t("yanıt yarıda kesildi (max_tokens)"))
     text = next((b.text for b in resp.content if b.type == "text"), "")
     usage = {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
     return {"data": json.loads(text), "usage": usage, "model": resp.model}
@@ -214,14 +215,14 @@ def _openai(p: dict, system: str, user: str, timeout: int, schema: dict = SCHEMA
         detail = e.read().decode(errors="replace")[:300]
         raise ReviewError(f"HTTP {e.code}: {detail}")
     except (urllib.error.URLError, TimeoutError) as e:
-        raise ReviewError(f"bağlanılamadı: {getattr(e, 'reason', e)}")
+        raise ReviewError(t("bağlanılamadı: {v0}", v0=getattr(e, 'reason', e)))
     try:
         choice = data["choices"][0]
         content = choice["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):
-        raise ReviewError("beklenmeyen yanıt biçimi")
+        raise ReviewError(t("beklenmeyen yanıt biçimi"))
     if choice.get("finish_reason") == "length":
-        raise ReviewError("yanıt yarıda kesildi (uzunluk sınırı)")
+        raise ReviewError(t("yanıt yarıda kesildi (uzunluk sınırı)"))
     return {"data": _extract_json(content), "usage": data.get("usage"), "model": data.get("model", p["model"])}
 
 
@@ -235,13 +236,13 @@ def _claude_code(p: dict, system: str, user: str, timeout: int, schema: dict = S
         try:
             r = subprocess.run(cmd, input=user, capture_output=True, text=True, timeout=timeout, cwd=cwd)
         except FileNotFoundError:
-            raise ReviewError("claude komutu bulunamadı")
+            raise ReviewError(t("claude komutu bulunamadı"))
         except subprocess.TimeoutExpired:
-            raise ReviewError("zaman aşımı")
+            raise ReviewError(t("zaman aşımı"))
     try:
         out = json.loads(r.stdout)
     except json.JSONDecodeError:
-        raise ReviewError((r.stderr or r.stdout).strip()[:300] or f"çıkış kodu {r.returncode}")
+        raise ReviewError((r.stderr or r.stdout).strip()[:300] or t("çıkış kodu {returncode}", returncode=r.returncode))
     if out.get("is_error"):
         raise ReviewError(str(out.get("result") or out.get("subtype"))[:300])
     data = out.get("structured_output")
@@ -262,11 +263,11 @@ def call(settings: dict, provider_id: str | None, system: str, user: str, schema
     started = time.time()
     base = {"provider": p["id"] if p else provider_id, "at": int(started)}
     if not p:
-        return {**base, "status": "error", "error": "sağlayıcı bulunamadı"}
+        return {**base, "status": "error", "error": t("sağlayıcı bulunamadı")}
     try:
         if p["type"] in ("anthropic", "openai") and not p.get("model"):
-            raise ReviewError(f"{p['name']}: model adı girilmemiş (Ayarlar → Sağlayıcılar)")
-        res = PROVIDERS[p["type"]](p, system, user, settings["review"]["timeout_seconds"], schema)
+            raise ReviewError(t("{name}: model adı girilmemiş (Ayarlar → Sağlayıcılar)", name=p['name']))
+        res = PROVIDERS[p["type"]](p, localize_prompt(system), user, settings["review"]["timeout_seconds"], schema)
     except ReviewError as e:
         return {**base, "status": "error", "error": str(e), "seconds": round(time.time() - started, 1)}
     except Exception as e:
@@ -286,11 +287,11 @@ def review(ctx: dict, settings: dict, provider_id: str | None = None) -> dict:
     started = time.time()
     base = {"provider": p["id"] if p else provider_id, "at": int(started)}
     if not p:
-        return {**base, "status": "error", "error": "sağlayıcı bulunamadı"}
+        return {**base, "status": "error", "error": t("sağlayıcı bulunamadı")}
     try:
         if p["type"] in ("anthropic", "openai") and not p.get("model"):
-            raise ReviewError(f"{p['name']}: model adı girilmemiş (Ayarlar → Sağlayıcılar)")
-        res = PROVIDERS[p["type"]](p, SYSTEM, build_prompt(ctx), settings["review"]["timeout_seconds"])
+            raise ReviewError(t("{name}: model adı girilmemiş (Ayarlar → Sağlayıcılar)", name=p['name']))
+        res = PROVIDERS[p["type"]](p, localize_prompt(SYSTEM), build_prompt(ctx), settings["review"]["timeout_seconds"])
         data = _validate(res["data"])
     except ReviewError as e:
         return {**base, "status": "error", "error": str(e), "seconds": round(time.time() - started, 1)}

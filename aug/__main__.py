@@ -10,8 +10,9 @@ import subprocess
 import sys
 import time
 
-from . import APP_ID, APP_NAME, check, notify, schedule, server, sources, state
+from . import APP_ID, app_name, check, notify, schedule, server, sources, state
 from .config import LOG_FILE, ensure_dirs, load_settings
+from .i18n import t
 
 
 def _background_setup(settings: dict) -> None:
@@ -43,7 +44,7 @@ def _notify(report: dict) -> None:
     logging.getLogger("aug").info("notify: %d new event(s)", len(fresh))
     parts = [e["text"] for e in fresh[:6]]
     if len(fresh) > 6:
-        parts.append(f"… ve {len(fresh) - 6} şey daha")
+        parts.append(t("… ve {v0} şey daha", v0=len(fresh) - 6))
     if not parts or not shutil.which("notify-send"):
         return
     critical = any(e["critical"] for e in fresh)
@@ -51,8 +52,8 @@ def _notify(report: dict) -> None:
     # notify-send rejects non-ASCII text unless the locale is UTF-8.
     env = dict(os.environ, LC_ALL="C.UTF-8")
     try:
-        r = subprocess.run(["notify-send", "-a", APP_NAME, "-i", "system-software-update", "-u", urgency,
-                            "-A", "open=Panoyu aç", "-w", "-t", "600000" if critical else "30000", APP_NAME, "\n".join(parts)],
+        r = subprocess.run(["notify-send", "-a", app_name(), "-i", "system-software-update", "-u", urgency,
+                            "-A", t("open=Panoyu aç"), "-w", "-t", "600000" if critical else "30000", app_name(), "\n".join(parts)],
                            capture_output=True, text=True, timeout=660, env=env)
         logging.getLogger("aug").info("notify-send rc=%s out=%r err=%r", r.returncode, r.stdout.strip(),
                                       r.stderr.strip()[:200])
@@ -74,7 +75,7 @@ def open_dashboard() -> None:
             if info:
                 break
     if not info:
-        sys.exit("Pano sunucusu başlatılamadı; ayrıntılar için günlüğe bak: " + str(LOG_FILE))
+        sys.exit(t("Pano sunucusu başlatılamadı; ayrıntılar için günlüğe bak: ") + str(LOG_FILE))
     url = f"http://127.0.0.1:{info['port']}/?t={info['token']}"
     browser = load_settings()["browser"]
     chromium = shutil.which("chromium")
@@ -87,18 +88,20 @@ def open_dashboard() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="aug", description=f"{APP_NAME}: Arch güncelleme panosu")
+    from .i18n import init_from_settings
+    init_from_settings()
+    ap = argparse.ArgumentParser(prog="aug", description=t("{app}: Arch güncelleme panosu", app=app_name()))
     ap.add_argument("-v", "--verbose", action="store_true")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("check", help="güncellemeleri topla ve incele")
-    c.add_argument("--notify", action="store_true", help="sonucu masaüstü bildirimi olarak göster")
+    c = sub.add_parser("check", help=t("güncellemeleri topla ve incele"))
+    c.add_argument("--notify", action="store_true", help=t("sonucu masaüstü bildirimi olarak göster"))
     c.add_argument("--quiet", action="store_true")
     c.add_argument("--background", action="store_true",
-                   help="zamanlanmış çalışma: açılıştan sonra bekle, indirme hızını sınırla")
-    sub.add_parser("open", help="panoyu aç")
-    sub.add_parser("serve", help="pano sunucusunu ön planda çalıştır")
-    sub.add_parser("install", help="zamanlayıcıyı ve menü kısayolunu kur")
-    sub.add_parser("uninstall", help="zamanlayıcıyı ve menü kısayolunu kaldır")
+                   help=t("zamanlanmış çalışma: açılıştan sonra bekle, indirme hızını sınırla"))
+    sub.add_parser("open", help=t("panoyu aç"))
+    sub.add_parser("serve", help=t("pano sunucusunu ön planda çalıştır"))
+    sub.add_parser("install", help=t("zamanlayıcıyı ve menü kısayolunu kur"))
+    sub.add_parser("uninstall", help=t("zamanlayıcıyı ve menü kısayolunu kaldır"))
     args = ap.parse_args(argv)
     _setup_logging(args.verbose)
 
@@ -113,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.quiet:
             print(check.summary(report))
             for e in report["errors"]:
-                print("HATA:", e, file=sys.stderr)
+                print(t("HATA:"), e, file=sys.stderr)
         if args.notify and load_settings()["notifications"]:
             _notify(report)
         return 0

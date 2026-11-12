@@ -14,6 +14,7 @@ import subprocess
 from collections import defaultdict
 from pathlib import Path
 
+from .i18n import t
 from .system import PACMAN_LOG, run
 
 LOADER = "/usr/lib/ld-linux-x86-64.so.2"
@@ -181,7 +182,7 @@ def open_ports() -> list[dict]:
             continue  # ephemeral client sockets (browsers, WebRTC), not services
         proc = re.search(r'users:\(\("([^"]+)"', line)
         ports.append({"proto": proto, "address": addr, "port": port_n, "process": proc[1] if proc else None,
-                      "service": KNOWN_PORTS.get(port_n), "public": addr in ("0.0.0.0", "*", "::")})
+                      "service": t(KNOWN_PORTS[port_n]) if port_n in KNOWN_PORTS else None, "public": addr in ("0.0.0.0", "*", "::")})
     docker = _docker_ports()
     for p in ports:
         p["container"] = docker.get(p["port"])

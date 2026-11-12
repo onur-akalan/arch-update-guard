@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 
 from . import aur, deps, state
+from . import app_name
+from .i18n import t
 from .config import PROJECT_DIR, RUNTIME_DIR
 
 RESULT_FILE = RUNTIME_DIR / "update-result.json"
@@ -53,22 +55,22 @@ def plan(report: dict, selected_aur: list[str]) -> list[dict]:
     for name in selected_aur:
         item = by_name.get(name)
         if not item or not item.get("target"):
-            raise UpdateError(f"{name}: güncellenecek bir AUR sürümü yok")
+            raise UpdateError(t("{name}: güncellenecek bir AUR sürümü yok", name=name))
         approval = st["approvals"].get(name)
         approved = bool(approval and approval.get("commit") == item.get("approval_key", item["target"]))
         if not (approved or item.get("auto_ok")):
-            raise UpdateError(f"{name}: onaylanmamış (durum: {item['status']}"
-                              f"{', bekleme süresinde' if item.get('held') else ''})")
+            raise UpdateError(t("{name}: onaylanmamış (durum: {status})", name=name, status=item["status"])
+                              + (t(", bekleme süresinde") if item.get("held") else ""))
         chosen.append(item)
     return chosen
 
 
 def launch(report: dict, selected_aur: list[str], news_acknowledged: bool) -> dict:
     if update_status()["running"]:
-        raise UpdateError("Bir güncelleme zaten çalışıyor.")
+        raise UpdateError(t("Bir güncelleme zaten çalışıyor."))
     unread = [n for n in report["news"] if n.get("since_last_upgrade") and not n.get("read")]
     if unread and not news_acknowledged:
-        raise UpdateError("Son güncellemeden sonra yayımlanan Arch haberlerini okuduğunu onaylaman gerekiyor.")
+        raise UpdateError(t("Son güncellemeden sonra yayımlanan Arch haberlerini okuduğunu onaylaman gerekiyor."))
     chosen = plan(report, selected_aur)
 
     # Final race check: every AUR repo involved (the package and any new AUR
@@ -76,11 +78,11 @@ def launch(report: dict, selected_aur: list[str], news_acknowledged: bool) -> di
     for item in chosen:
         for pkgbase, want, label in _heads(item):
             if aur.ls_remote_head(pkgbase) != want:
-                raise UpdateError(f"{label}: AUR deposu incelendikten sonra değişti. Önce yeniden kontrol et.")
+                raise UpdateError(t("{label}: AUR deposu incelendikten sonra değişti. Önce yeniden kontrol et.", label=label))
 
     terminal = shutil.which("konsole")
     if not terminal:
-        raise UpdateError("Konsole bulunamadı.")
+        raise UpdateError(t("Konsole bulunamadı."))
 
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     script = RUNTIME_DIR / f"update-{int(time.time())}.sh"
@@ -88,7 +90,7 @@ def launch(report: dict, selected_aur: list[str], news_acknowledged: bool) -> di
     script.chmod(0o700)
     RESULT_FILE.unlink(missing_ok=True)
 
-    proc = subprocess.Popen([terminal, "--separate", "--hide-menubar", "-p", "tabtitle=Güncelleme Bekçisi",
+    proc = subprocess.Popen([terminal, "--separate", "--hide-menubar", "-p", f"tabtitle={app_name()}",
                              "-e", "bash", str(script)],
                             start_new_session=True, stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -100,19 +102,19 @@ def launch_restart(report: dict, units: list[str]) -> dict:
     allowed = {s["unit"] for s in report.get("runtime", {}).get("services", []) if s.get("safe")}
     units = [u for u in units if u in allowed]
     if not units:
-        raise UpdateError("Yeniden başlatılacak geçerli bir servis seçilmedi.")
+        raise UpdateError(t("Yeniden başlatılacak geçerli bir servis seçilmedi."))
     terminal = shutil.which("konsole")
     if not terminal:
-        raise UpdateError("Konsole bulunamadı.")
+        raise UpdateError(t("Konsole bulunamadı."))
     q = " ".join(shlex.quote(u) for u in units)
     aug = shlex.quote(str(PROJECT_DIR / "bin" / "aug"))
     script = RUNTIME_DIR / f"restart-{int(time.time())}.sh"
     script.write_text(f"""#!/bin/bash
-echo "Yeniden başlatılacak servisler: {' '.join(units)}"
-sudo systemctl restart {q} && echo "Tamam." || echo "Bazı servisler yeniden başlatılamadı."
+echo {shlex.quote(t("Yeniden başlatılacak servisler: {units}", units=" ".join(units)))}
+sudo systemctl restart {q} && echo {shlex.quote(t("Tamam."))} || echo {shlex.quote(t("Bazı servisler yeniden başlatılamadı."))}
 systemctl --no-pager --lines=0 status {q} | grep -E '^(●|○|×)| Active:'
 {aug} check --quiet >/dev/null 2>&1 &
-read -rp "Pencereyi kapatmak için Enter'a bas. "
+read -rp {shlex.quote(t("Pencereyi kapatmak için Enter'a bas. "))}
 """, encoding="utf-8")
     script.chmod(0o700)
     subprocess.Popen([terminal, "--separate", "--hide-menubar", "-e", "bash", str(script)],
@@ -125,7 +127,7 @@ def _heads(item: dict) -> list[tuple[str, str, str]]:
     out = [(item["pkgbase"], item["target"], item["name"])]
     for d in deps.flatten(item.get("new_aur_deps", [])):
         if d.get("pkgbase") and d.get("target"):
-            out.append((d["pkgbase"], d["target"], f"{d['name']} ({item['name']} bağımlılığı)"))
+            out.append((d["pkgbase"], d["target"], t("{dep} ({parent} bağımlılığı)", dep=d["name"], parent=item["name"])))
     return out
 
 
@@ -148,7 +150,7 @@ def _script(chosen: list[dict], report: dict) -> str:
         for i in chosen)
     aug = q(str(PROJECT_DIR / "bin" / "aug"))
     return f"""#!/bin/bash
-# Güncelleme Bekçisi tarafından oluşturuldu: {time.strftime('%Y-%m-%d %H:%M:%S')}
+# Generated by arch-update-guard: {time.strftime('%Y-%m-%d %H:%M:%S')}
 set -uo pipefail
 RESULT={q(str(RESULT_FILE))}
 RUNNING={q(str(RUNNING_FILE))}
@@ -171,7 +173,7 @@ check_head() {{
     base=$1 want=$2; shift 2
     have=$(git ls-remote "https://aur.archlinux.org/$base.git" HEAD | cut -f1)
     if [[ "$have" != "$want" ]]; then
-      echo "  ! $base incelendikten sonra AUR'da değişti; $name ATLANIYOR."
+      printf {q(t("  ! %s incelendikten sonra AUR'da değişti; %s ATLANIYOR.") + chr(92) + "n")} "$base" "$name"
       return
     fi
   done
@@ -190,47 +192,49 @@ seed() {{
   return 0
 }}
 
+say() {{ printf '%s%s%s\\n' "$1" "$2" "$off"; }}
+
 bold=$'\\e[1m'; dim=$'\\e[2m'; red=$'\\e[31m'; green=$'\\e[32m'; yellow=$'\\e[33m'; off=$'\\e[0m'
 
-echo "${{bold}}=== Güncelleme Bekçisi ===${{off}}"
-echo "${{dim}}Timeshift, pacman işleminden önce otomatik anlık görüntü alır.${{off}}"
+say "$bold" {q("=== " + app_name() + " ===")}
+say "$dim" {q(t("Timeshift, pacman işleminden önce otomatik anlık görüntü alır."))}
 echo
-echo "${{bold}}1/2 Resmi depolar ({len(report['repo'])} paket bekliyordu)${{off}}"
+say "$bold" {q(t("1/2 Resmi depolar ({n} paket bekliyordu)", n=len(report['repo'])))}
 sudo pacman -Syu
 repo_rc=$?
 if [[ $repo_rc -ne 0 ]]; then
-  echo "${{red}}pacman başarısız oldu (kod $repo_rc). AUR adımı atlanıyor.${{off}}"
+  say "$red" "$(printf {q(t("pacman başarısız oldu (kod %s). AUR adımı atlanıyor."))} "$repo_rc")"
 else
   echo
-  echo "${{bold}}2/2 AUR{f' ({len(chosen)} onaylı paket)' if chosen else ''}${{off}}"
+  say "$bold" {q("2/2 AUR" + (t(" ({n} onaylı paket)", n=len(chosen)) if chosen else ""))}
 {aur_checks or '  :'}
   if (( ${{#AUR_PKGS[@]}} )); then
-    echo "  Kurulacak: ${{AUR_PKGS[*]}}"
+    echo {q(t("  Kurulacak:"))} "${{AUR_PKGS[*]}}"
 {seeds}
     yay -S --aur --needed --answerdiff None --answerclean None --answeredit None --removemake "${{AUR_PKGS[@]}}"
     aur_rc=$?
   else
-    echo "  Güncellenecek onaylı AUR paketi yok."
+    echo {q(t("  Güncellenecek onaylı AUR paketi yok."))}
     aur_rc=0
   fi
 fi
 
 echo
 if [[ ! -d "/usr/lib/modules/$(uname -r)" ]]; then
-  echo "${{yellow}}${{bold}}Çekirdek güncellendi: değişikliklerin etkin olması için bilgisayarı yeniden başlat.${{off}}"
+  say "$yellow$bold" {q(t("Çekirdek güncellendi: değişikliklerin etkin olması için bilgisayarı yeniden başlat."))}
 fi
 pacnew=$(pacdiff -o -f 2>/dev/null)
 if [[ -n "$pacnew" ]]; then
-  echo "${{yellow}}Birleştirilmeyi bekleyen yapılandırma dosyaları (.pacnew):${{off}}"
+  say "$yellow" {q(t("Birleştirilmeyi bekleyen yapılandırma dosyaları (.pacnew):"))}
   echo "$pacnew" | sed 's/^/  /'
 fi
 if [[ $repo_rc -eq 0 && $aur_rc -eq 0 ]]; then
-  echo "${{green}}${{bold}}Güncelleme tamamlandı.${{off}}"
+  say "$green$bold" {q(t("Güncelleme tamamlandı."))}
 fi
 finish
 trap - EXIT
-echo "${{dim}}Pano yeniden kontrol ediliyor...${{off}}"
+say "$dim" {q(t("Pano yeniden kontrol ediliyor..."))}
 {aug} check --quiet >/dev/null 2>&1 &
 echo
-read -rp "Pencereyi kapatmak için Enter'a bas. "
+read -rp {shlex.quote(t("Pencereyi kapatmak için Enter'a bas. "))}
 """

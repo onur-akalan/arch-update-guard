@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 
 from . import APP_ID
+from .i18n import t
 
 HOME = Path.home()
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / APP_ID
@@ -32,6 +33,7 @@ WEB_DIR = PROJECT_DIR / "web"
 YAY_CACHE = HOME / ".cache/yay"
 
 DEFAULT_SETTINGS: dict = {
+    "language": "tr",  # tr | en: interface and AI answers
     "hold_days": 2,
     "schedule": "daily",  # daily | twice | weekly
     "notifications": True,
@@ -44,7 +46,7 @@ DEFAULT_SETTINGS: dict = {
         "nvd_budget_seconds": 60,  # time per check spent fetching CVE details from NVD
         # Published lists of compromised AUR packages (one name per line).
         "compromised_lists": [
-            {"name": "Atomic Arch (Haziran 2026)", "url": "https://md.archlinux.org/s/SxbqukK6IA/download",
+            {"name": "Atomic Arch (2026-06)", "url": "https://md.archlinux.org/s/SxbqukK6IA/download",
              "since": "2026-06-09"},
         ],
     },
@@ -65,7 +67,7 @@ DEFAULT_SETTINGS: dict = {
     "providers": [
         {
             "id": "claude-code",
-            "name": "Claude Code (abonelik)",
+            "name": "Claude Code",
             "type": "claude-code",
             "model": "sonnet",
         },
@@ -148,35 +150,37 @@ def validate_settings(s: dict) -> dict:
     try:
         s["hold_days"] = int(s["hold_days"])
     except (TypeError, ValueError):
-        raise SettingsError("Bekleme süresi bir tam sayı olmalı.")
+        raise SettingsError(t("Bekleme süresi bir tam sayı olmalı."))
     if not 0 <= s["hold_days"] <= 30:
-        raise SettingsError("Bekleme süresi 0 ile 30 gün arasında olmalı.")
+        raise SettingsError(t("Bekleme süresi 0 ile 30 gün arasında olmalı."))
     if s["schedule"] not in SCHEDULES:
-        raise SettingsError("Geçersiz kontrol sıklığı.")
+        raise SettingsError(t("Geçersiz kontrol sıklığı."))
     if s["browser"] not in ("chromium-app", "default"):
-        raise SettingsError("Geçersiz tarayıcı seçimi.")
+        raise SettingsError(t("Geçersiz tarayıcı seçimi."))
+    if s["language"] not in ("tr", "en"):
+        raise SettingsError(t("Geçersiz dil."))
     s["notifications"] = bool(s["notifications"])
     if s["notify_level"] not in ("important", "all"):
-        raise SettingsError("Geçersiz bildirim düzeyi.")
+        raise SettingsError(t("Geçersiz bildirim düzeyi."))
     try:
         s["startup_delay_minutes"] = int(s["startup_delay_minutes"])
     except (TypeError, ValueError):
-        raise SettingsError("Açılış gecikmesi bir tam sayı olmalı.")
+        raise SettingsError(t("Açılış gecikmesi bir tam sayı olmalı."))
     if not 0 <= s["startup_delay_minutes"] <= 120:
-        raise SettingsError("Açılış gecikmesi 0 ile 120 dakika arasında olmalı.")
+        raise SettingsError(t("Açılış gecikmesi 0 ile 120 dakika arasında olmalı."))
     sec = s["security"]
     sec["auto_analyze"] = bool(sec["auto_analyze"])
     sec["news_ai"] = bool(sec["news_ai"])
     try:
         sec["nvd_budget_seconds"] = int(sec["nvd_budget_seconds"])
     except (TypeError, ValueError):
-        raise SettingsError("NVD süresi bir tam sayı olmalı.")
+        raise SettingsError(t("NVD süresi bir tam sayı olmalı."))
     if not 0 <= sec["nvd_budget_seconds"] <= 900:
-        raise SettingsError("NVD süresi 0 ile 900 saniye arasında olmalı.")
+        raise SettingsError(t("NVD süresi 0 ile 900 saniye arasında olmalı."))
     lists = []
     for lst in sec.get("compromised_lists") or []:
         if not isinstance(lst, dict) or not str(lst.get("url", "")).startswith("https://"):
-            raise SettingsError("Saldırı listesi adresi https:// ile başlamalı.")
+            raise SettingsError(t("Saldırı listesi adresi https:// ile başlamalı."))
         lists.append({"name": str(lst.get("name") or lst["url"])[:80], "url": lst["url"],
                       "since": str(lst.get("since") or "")[:10] or None})
     sec["compromised_lists"] = lists
@@ -187,52 +191,52 @@ def validate_settings(s: dict) -> dict:
     try:
         src["max_file_mb"] = int(src["max_file_mb"])
     except (TypeError, ValueError):
-        raise SettingsError("Kaynak boyut sınırı bir tam sayı olmalı.")
+        raise SettingsError(t("Kaynak boyut sınırı bir tam sayı olmalı."))
     if not 1 <= src["max_file_mb"] <= 4096:
-        raise SettingsError("Kaynak boyut sınırı 1 ile 4096 MB arasında olmalı.")
+        raise SettingsError(t("Kaynak boyut sınırı 1 ile 4096 MB arasında olmalı."))
     try:
         src["time_budget_minutes"] = int(src["time_budget_minutes"])
     except (TypeError, ValueError):
-        raise SettingsError("İndirme süresi bir tam sayı olmalı.")
+        raise SettingsError(t("İndirme süresi bir tam sayı olmalı."))
     if not 1 <= src["time_budget_minutes"] <= 240:
-        raise SettingsError("İndirme süresi 1 ile 240 dakika arasında olmalı.")
+        raise SettingsError(t("İndirme süresi 1 ile 240 dakika arasında olmalı."))
     try:
         src["background_rate_mb"] = float(src["background_rate_mb"])
     except (TypeError, ValueError):
-        raise SettingsError("İndirme hızı sınırı bir sayı olmalı.")
+        raise SettingsError(t("İndirme hızı sınırı bir sayı olmalı."))
     if not 0 <= src["background_rate_mb"] <= 1000:
-        raise SettingsError("İndirme hızı sınırı 0 ile 1000 MB/s arasında olmalı.")
+        raise SettingsError(t("İndirme hızı sınırı 0 ile 1000 MB/s arasında olmalı."))
     r = s["review"]
     r["enabled"] = bool(r["enabled"])
     for key, lo, hi in (("max_diff_chars", 5000, 1_000_000), ("timeout_seconds", 20, 1800)):
         try:
             r[key] = int(r[key])
         except (TypeError, ValueError):
-            raise SettingsError(f"{key} bir tam sayı olmalı.")
+            raise SettingsError(t("{key} bir tam sayı olmalı.", key=key))
         if not lo <= r[key] <= hi:
-            raise SettingsError(f"{key} {lo} ile {hi} arasında olmalı.")
+            raise SettingsError(t("{key} {lo} ile {hi} arasında olmalı.", key=key, lo=lo, hi=hi))
     ids = set()
     clean = []
     for p in s["providers"]:
         pid = str(p.get("id", "")).strip()
         if not pid or not all(c.isalnum() or c in "-_" for c in pid):
-            raise SettingsError("Sağlayıcı kimliği yalnızca harf, rakam, - ve _ içerebilir.")
+            raise SettingsError(t("Sağlayıcı kimliği yalnızca harf, rakam, - ve _ içerebilir."))
         if pid in ids:
-            raise SettingsError(f"Aynı kimlikte iki sağlayıcı var: {pid}")
+            raise SettingsError(t("Aynı kimlikte iki sağlayıcı var: {pid}", pid=pid))
         ids.add(pid)
         if p.get("type") not in PROVIDER_TYPES:
-            raise SettingsError(f"{pid}: geçersiz sağlayıcı türü.")
+            raise SettingsError(t("{pid}: geçersiz sağlayıcı türü.", pid=pid))
         if p["type"] == "openai" and not str(p.get("base_url", "")).startswith(("http://", "https://")):
-            raise SettingsError(f"{pid}: adres http:// ya da https:// ile başlamalı.")
+            raise SettingsError(t("{pid}: adres http:// ya da https:// ile başlamalı.", pid=pid))
         if p.get("effort") and p["effort"] not in ("low", "medium", "high", "xhigh", "max"):
-            raise SettingsError(f"{pid}: geçersiz effort değeri.")
+            raise SettingsError(t("{pid}: geçersiz effort değeri.", pid=pid))
         if p.get("json_mode") and p["json_mode"] not in ("json_schema", "json_object", "none"):
-            raise SettingsError(f"{pid}: geçersiz JSON kipi.")
+            raise SettingsError(t("{pid}: geçersiz JSON kipi.", pid=pid))
         allowed = {"id", "name", "type", "model", "base_url", "effort", "json_mode"}
         clean.append({k: (str(v).strip() if isinstance(v, str) else v) for k, v in p.items() if k in allowed})
     s["providers"] = clean
     if r["active_provider"] not in ids:
-        raise SettingsError("Etkin sağlayıcı listede yok.")
+        raise SettingsError(t("Etkin sağlayıcı listede yok."))
     return s
 
 
@@ -265,7 +269,7 @@ def set_secret(provider_id: str, value: str) -> None:
                         *_secret_attrs(provider_id)],
                        input=value, capture_output=True, text=True, timeout=30)
     if r.returncode != 0:
-        raise RuntimeError("Anahtar kasaya kaydedilemedi: " + (r.stderr.strip() or "bilinmeyen hata"))
+        raise RuntimeError(t("Anahtar kasaya kaydedilemedi: ") + (r.stderr.strip() or t("bilinmeyen hata")))
 
 
 def delete_secret(provider_id: str) -> None:

@@ -1,6 +1,10 @@
 #!/bin/sh
-# Güncelleme Bekçisi başlatıcısı: projenin sanal ortamındaki Python ile çalışır.
+# arch-update-guard launcher: uses the project's virtualenv when there is one
+# (needed only for the Anthropic API provider), otherwise the system Python.
 here=$(dirname "$(readlink -f "$0")")
 root=$(dirname "$here")
 cd "$root" || exit 1
-exec "$root/.venv/bin/python" -m aug "$@"
+if [ -x "$root/.venv/bin/python" ]; then
+    exec "$root/.venv/bin/python" -m aug "$@"
+fi
+exec python3 -m aug "$@"

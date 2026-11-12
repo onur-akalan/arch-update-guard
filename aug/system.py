@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from .i18n import t
 
 
 def run(cmd: list[str], timeout: int = 120, check: bool = False, **kw) -> subprocess.CompletedProcess:
@@ -43,7 +44,7 @@ def repo_updates() -> list[dict]:
     if r.returncode == 2:  # no updates
         return []
     if r.returncode != 0:
-        raise CheckUpdatesError(r.stderr.strip() or f"checkupdates çıkış kodu {r.returncode}")
+        raise CheckUpdatesError(r.stderr.strip() or t("checkupdates çıkış kodu {returncode}", returncode=r.returncode))
     items = []
     for line in r.stdout.splitlines():
         m = re.match(r"^(\S+) (\S+) -> (\S+)", line)

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .config import DATA_DIR, HOME, atomic_write_json, read_json
 from .feeds import http_get
+from .i18n import t
 
 CACHE = DATA_DIR / "compromised-cache.json"
 TTL = 12 * 3600
@@ -95,19 +96,16 @@ def check_lists(bad: dict[str, dict], foreign: dict[str, str], history: dict[str
             out.append({
                 "kind": "compromised-package", "severity": "high", "package": name, "campaign": info["campaign"],
                 "installed": installed, "last": max(during),
-                "title": f"{name}: {info['campaign']} saldırısında ele geçirilen paketlerden biri "
-                         f"{'kurulu' if installed else 'bu bilgisayarda kurulmuştu'}",
-                "detail": f"Saldırı başlangıcından ({info.get('since') or '?'}) sonra {_day(max(during))} tarihinde "
-                          "kuruldu/güncellendi. Paketin o sürümü zararlıysa tarayıcı oturumları, SSH anahtarları ve "
-                          "API anahtarları çalınmış olabilir: bunları yenile, Arch'ın duyurusundaki adımları izle.",
+                "title": t("{name}: {campaign} saldırısında ele geçirilen paketlerden biri {v2}", name=name, campaign=info['campaign'], v2=t('kurulu') if installed else t('bu bilgisayarda kurulmuştu')),
+                "detail": t("Saldırı başlangıcından ({v0}) sonra {v1} tarihinde kuruldu/güncellendi. Paketin o sürümü zararlıysa tarayıcı oturumları, SSH anahtarları ve API anahtarları çalınmış olabilir: bunları yenile, Arch'ın duyurusundaki adımları izle.", v0=info.get('since') or '?', v1=_day(max(during))),
             })
         elif installed:
             out.append({
                 "kind": "compromised-package-old", "severity": "info", "package": name, "campaign": info["campaign"],
                 "installed": True, "last": max(times) if times else None,
-                "title": f"{name}: {info['campaign']} listesinde, ama saldırıdan önce kurulmuş",
-                "detail": "Saldırı tarihinden beri güncellenmedi, yani zararlı sürüm kurulmamış görünüyor. Bir sonraki "
-                          "güncellemesini dikkatle incele.",
+                "title": t("{name}: {campaign} listesinde, ama saldırıdan önce kurulmuş", name=name, campaign=info['campaign']),
+                "detail": t("Saldırı tarihinden beri güncellenmedi, yani zararlı sürüm kurulmamış görünüyor. Bir sonraki "
+                          "güncellemesini dikkatle incele."),
             })
     return out
 
@@ -122,17 +120,17 @@ def shadowing() -> list[dict]:
                 if str(target).startswith(("/usr/bin/", "/usr/sbin/")):
                     continue  # a symlink back to the real command is harmless
                 out.append({"kind": "shadowed-command", "severity": "high", "package": cmd,
-                            "title": f"'{cmd}' komutunu gölgeleyen bir dosya var: {p}",
-                            "detail": "Bu dizin PATH'te /usr/bin'den önce gelirse, yazdığın komut yerine bu dosya çalışır. "
+                            "title": t("'{cmd}' komutunu gölgeleyen bir dosya var: {p}", cmd=cmd, p=p),
+                            "detail": t("Bu dizin PATH'te /usr/bin'den önce gelirse, yazdığın komut yerine bu dosya çalışır. "
                                       "Haziran 2026 saldırısı ~/.local/bin/sudo ile sudo parolalarını topluyordu. "
-                                      "Dosyayı sen koymadıysan çalıştırmadan incele ve sil."})
+                                      "Dosyayı sen koymadıysan çalıştırmadan incele ve sil.")})
     for rc in SHELL_RC:
         p = HOME / rc
         try:
             for i, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
                 if WRAP.search(line):
                     out.append({"kind": "wrapped-command", "severity": "high", "package": rc,
-                                "title": f"{rc} içinde sudo/su/ssh/passwd'yi saran bir tanım var (satır {i})",
+                                "title": t("{rc} içinde sudo/su/ssh/passwd'yi saran bir tanım var (satır {i})", rc=rc, i=i),
                                 "detail": line.strip()[:200] + " — bunu sen eklemediysen incele."})
         except OSError:
             continue

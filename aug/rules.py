@@ -10,6 +10,7 @@ import re
 import urllib.parse
 
 from .aur import is_vcs
+from .i18n import t
 
 HIGH, MEDIUM, INFO = "high", "medium", "info"
 ORPHAN = ""  # stored as the known maintainer of a package that had none (None = never seen)
@@ -126,7 +127,9 @@ def _hosts(sources: list[str]) -> set[str]:
 
 
 def _f(sev, code, title, detail="", file="", line=""):
-    return {"severity": sev, "code": code, "title": title, "detail": detail, "file": file, "line": line[:300]}
+    # Titles of module-level rules are Turkish constants: translate at use time.
+    return {"severity": sev, "code": code, "title": t(title), "detail": t(detail) if detail else detail,
+            "file": file, "line": line[:300]}
 
 
 def scan(*, pkgname: str, diff_text: str, has_base: bool, old_info: dict, new_info: dict,
@@ -147,14 +150,14 @@ def scan(*, pkgname: str, diff_text: str, has_base: bool, old_info: dict, new_in
                 # .install scripts run as root after pacman installs the package: they have
                 # no reason to download anything.
                 if file.endswith(".install") and code in INSTALL_NET:
-                    sev, title = HIGH, title + " — kurulum betiğinde, root olarak"
+                    sev, title = HIGH, t(title) + t(" — kurulum betiğinde, root olarak")
                 findings.append(_f(sev, code, title, file=file, line=stripped))
     hit = KNOWN_BAD.get(pkgname)
     if hit:
         findings.append(_f(MEDIUM, "known-compromised",
-                           f"Bu paket bilinen bir saldırıda ele geçirilmişti ({hit})",
-                           "Paket o zamandan beri temizlenmiş ya da başka birine geçmiş olabilir. Bakımcıyı, commit "
-                           "geçmişini ve değişiklikleri dikkatle incele."))
+                           t("Bu paket bilinen bir saldırıda ele geçirilmişti ({hit})", hit=hit),
+                           t("Paket o zamandan beri temizlenmiş ya da başka birine geçmiş olabilir. Bakımcıyı, commit "
+                           "geçmişini ve değişiklikleri dikkatle incele.")))
 
     # Structural checks from .SRCINFO (only meaningful against a base).
     if has_base and old_info and new_info:
@@ -165,49 +168,48 @@ def scan(*, pkgname: str, diff_text: str, has_base: bool, old_info: dict, new_in
         old_skip = old_info.get("checksums", []).count("SKIP")
         new_skip = new_info.get("checksums", []).count("SKIP")
         if new_skip > old_skip and not is_vcs(pkgname):
-            findings.append(_f(MEDIUM, "checksum-skip", "Sağlama toplamı doğrulaması kapatıldı (SKIP)",
-                               f"SKIP sayısı {old_skip} → {new_skip}"))
+            findings.append(_f(MEDIUM, "checksum-skip", t("Sağlama toplamı doğrulaması kapatıldı (SKIP)"),
+                               t("SKIP sayısı {old_skip} → {new_skip}", old_skip=old_skip, new_skip=new_skip)))
         if set(new_info.get("install", [])) - set(old_info.get("install", [])):
-            findings.append(_f(MEDIUM, "new-install-script", "Yeni bir kurulum betiği (.install) eklendi",
+            findings.append(_f(MEDIUM, "new-install-script", t("Yeni bir kurulum betiği (.install) eklendi"),
                                ", ".join(new_info["install"])))
         if old_info.get("validpgpkeys") and set(old_info["validpgpkeys"]) - set(new_info.get("validpgpkeys", [])):
-            findings.append(_f(MEDIUM, "pgp-key-changed", "Kaynak imzasını doğrulayan PGP anahtarı değişti/kaldırıldı"))
+            findings.append(_f(MEDIUM, "pgp-key-changed", t("Kaynak imzasını doğrulayan PGP anahtarı değişti/kaldırıldı")))
         if old_info.get("url") and new_info.get("url") and old_info["url"] != new_info["url"]:
-            findings.append(_f(MEDIUM, "url-changed", "Projenin ana sayfası değişti",
+            findings.append(_f(MEDIUM, "url-changed", t("Projenin ana sayfası değişti"),
                                f"{old_info['url']} → {new_info['url']}"))
 
     files = changed_files(diff_text)
     for f, kind in files.items():
         if kind == "modified" and f.endswith(".install") and has_base:
-            findings.append(_f(MEDIUM, "install-script-changed", "Kurulum betiği (.install) değişti", file=f))
+            findings.append(_f(MEDIUM, "install-script-changed", t("Kurulum betiği (.install) değişti"), file=f))
         if kind == "added" and has_base and CODE_FILE.search(f) and not f.endswith("PKGBUILD"):
-            findings.append(_f(INFO, "new-file", "Pakete yeni bir betik dosyası eklendi", file=f))
+            findings.append(_f(INFO, "new-file", t("Pakete yeni bir betik dosyası eklendi"), file=f))
 
     # People.
     if has_base and prev_authors:
         new_people = {c["email"] for c in commits} - prev_authors
         if new_people:
             names = sorted({f"{c['author']} <{c['email']}>" for c in commits if c["email"] in new_people})
-            findings.append(_f(MEDIUM, "new-committer", "Paketi daha önce değiştirmemiş biri commit atmış",
+            findings.append(_f(MEDIUM, "new-committer", t("Paketi daha önce değiştirmemiş biri commit atmış"),
                                ", ".join(names)))
     if meta:
         maint = meta.get("Maintainer")
         if known_maintainer == ORPHAN and maint:
-            findings.append(_f(MEDIUM, "orphan-adopted", "Sahipsiz paket yeni biri tarafından sahiplenildi",
-                               f"Yeni bakımcı: {maint}. Haziran 2026 saldırısında yüzlerce sahipsiz paket böyle "
-                               "sahiplenilip PKGBUILD'e zararlı komut eklendi; değişiklikleri dikkatle incele."))
+            findings.append(_f(MEDIUM, "orphan-adopted", t("Sahipsiz paket yeni biri tarafından sahiplenildi"),
+                               t("Yeni bakımcı: {maint}. Haziran 2026 saldırısında yüzlerce sahipsiz paket böyle sahiplenilip PKGBUILD'e zararlı komut eklendi; değişiklikleri dikkatle incele.", maint=maint)))
         elif known_maintainer not in (None, ORPHAN) and maint != known_maintainer:
-            findings.append(_f(MEDIUM, "maintainer-changed", "Paketin bakımcısı değişti",
+            findings.append(_f(MEDIUM, "maintainer-changed", t("Paketin bakımcısı değişti"),
                                f"{known_maintainer} → {maint or 'sahipsiz'}"))
         if not maint:
-            findings.append(_f(INFO, "orphaned", "Paketin şu an bakımcısı yok (sahipsiz)"))
+            findings.append(_f(INFO, "orphaned", t("Paketin şu an bakımcısı yok (sahipsiz)")))
         if meta.get("OutOfDate"):
-            findings.append(_f(INFO, "out-of-date", "AUR'da 'güncel değil' olarak işaretli"))
+            findings.append(_f(INFO, "out-of-date", t("AUR'da 'güncel değil' olarak işaretli")))
         if (meta.get("NumVotes") or 0) < 5:
-            findings.append(_f(INFO, "low-votes", "Çok az oy almış, az kişi tarafından kullanılıyor",
-                               f"{meta.get('NumVotes', 0)} oy"))
+            findings.append(_f(INFO, "low-votes", t("Çok az oy almış, az kişi tarafından kullanılıyor"),
+                               t("{n} oy", n=meta.get('NumVotes', 0))))
     if not has_base:
-        findings.append(_f(INFO, "no-base", "Kurulu sürümün commit'i bulunamadı; paketin tamamı inceleniyor"))
+        findings.append(_f(INFO, "no-base", t("Kurulu sürümün commit'i bulunamadı; paketin tamamı inceleniyor")))
     return findings
 
 

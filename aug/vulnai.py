@@ -5,6 +5,7 @@ from __future__ import annotations
 import secrets
 
 from . import review
+from .i18n import t
 
 SCHEMA = {
     "type": "object",
@@ -81,7 +82,7 @@ def build_prompt(v: dict, runtime: dict | None) -> str:
 
 def _clean(d: dict) -> dict:
     if not isinstance(d, dict) or d.get("assessment") not in ("affected", "fixed", "not_applicable", "unknown"):
-        raise ValueError("geçersiz yanıt")
+        raise ValueError(t("geçersiz yanıt"))
     return {
         "assessment": d["assessment"],
         "confidence": d.get("confidence") if d.get("confidence") in ("high", "medium", "low") else "low",

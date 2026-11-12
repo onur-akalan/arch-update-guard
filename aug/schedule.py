@@ -5,8 +5,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from . import APP_ID, APP_NAME
+from . import APP_ID, app_name
 from .config import HOME, PROJECT_DIR, SCHEDULES
+from .i18n import t
 
 UNIT_DIR = HOME / ".config/systemd/user"
 SERVICE = UNIT_DIR / f"{APP_ID}-check.service"
@@ -21,7 +22,7 @@ def _systemctl(*args: str) -> subprocess.CompletedProcess:
 
 def _service_text() -> str:
     return f"""[Unit]
-Description={APP_NAME}: güncelleme ve güvenlik kontrolü
+Description={app_name()}: {t("güncelleme ve güvenlik kontrolü")}
 Documentation=file://{PROJECT_DIR}/README.md
 
 [Service]
@@ -44,7 +45,7 @@ MemoryHigh=1500M
 def _timer_text(schedule: str) -> str:
     cal = "\n".join(f"OnCalendar={c}" for c in SCHEDULES[schedule])
     return f"""[Unit]
-Description={APP_NAME}: zamanlanmış kontrol
+Description={app_name()}: {t("zamanlanmış kontrol")}
 
 [Timer]
 {cal}
@@ -59,14 +60,14 @@ WantedBy=timers.target
 def _desktop_text() -> str:
     return f"""[Desktop Entry]
 Type=Application
-Name={APP_NAME}
-GenericName=Arch güncelleme panosu
-Comment=pacman ve AUR güncellemelerini inceleyip güvenle uygula
+Name={app_name()}
+GenericName={t("Arch güncelleme panosu")}
+Comment={t("pacman ve AUR güncellemelerini inceleyip güvenle uygula")}
 Exec={AUG} open
 Icon=system-software-update
 Terminal=false
 Categories=System;PackageManager;
-Keywords=update;pacman;aur;yay;güncelleme;
+Keywords=update;pacman;aur;yay;güncelleme;security;
 StartupWMClass={APP_ID}
 """
 
@@ -78,10 +79,11 @@ def install(schedule: str) -> list[str]:
     TIMER.write_text(_timer_text(schedule))
     DESKTOP.parent.mkdir(parents=True, exist_ok=True)
     DESKTOP.write_text(_desktop_text())
-    msgs.append(f"yazıldı: {SERVICE}, {TIMER}, {DESKTOP}")
+    msgs.append(t("yazıldı: {files}", files=f"{SERVICE}, {TIMER}, {DESKTOP}"))
     _systemctl("daemon-reload")
     r = _systemctl("enable", "--now", TIMER.name)
-    msgs.append("zamanlayıcı etkin" if r.returncode == 0 else f"zamanlayıcı etkinleştirilemedi: {r.stderr.strip()}")
+    msgs.append(t("zamanlayıcı etkin") if r.returncode == 0
+                else t("zamanlayıcı etkinleştirilemedi: {err}", err=r.stderr.strip()))
     subprocess.run(["update-desktop-database", str(DESKTOP.parent)], capture_output=True)
     return msgs
 
@@ -89,14 +91,14 @@ def install(schedule: str) -> list[str]:
 def apply(schedule: str) -> str:
     """Rewrite the timer for a new schedule (only if installed)."""
     if not TIMER.exists():
-        return "zamanlayıcı kurulu değil"
+        return t("zamanlayıcı kurulu değil")
     new = _timer_text(schedule)
     if TIMER.read_text() == new:
-        return "değişmedi"
+        return t("değişmedi")
     TIMER.write_text(new)
     _systemctl("daemon-reload")
     _systemctl("restart", TIMER.name)
-    return "güncellendi"
+    return t("güncellendi")
 
 
 def uninstall() -> list[str]:

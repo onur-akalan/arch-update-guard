@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from . import aur, cve, deps, feeds, incidents, newsai, review, rules, runtime, sources, state, system, vulnai
 from .config import REPORT_FILE, RUNTIME_DIR, atomic_write_json, get_secret, load_settings, read_json
+from .i18n import t
 
 log = logging.getLogger("aug")
 
@@ -42,8 +43,8 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
     if meta is None:
         return {**base_item, "status": "missing", "new_version": None,
                 "findings": [rules._f(rules.MEDIUM, "not-in-aur", "Paket AUR'da yok",
-                                      "Silinmiş, yeniden adlandırılmış ya da elle kurulmuş olabilir. "
-                                      "AUR'dan kaldırılan paketler bazen zararlı olduğu için silinir.")]}
+                                      t("Silinmiş, yeniden adlandırılmış ya da elle kurulmuş olabilir. "
+                                      "AUR'dan kaldırılan paketler bazen zararlı olduğu için silinir."))]}
 
     pkgbase = meta["PackageBase"]
     vcs = aur.is_vcs(name)
@@ -90,8 +91,8 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
         if cached and cached.get("status") == "ok":
             llm = cached
         elif sources.pending(src):
-            llm = {"status": "error", "error": "Kaynak dosyalar hâlâ iniyor; yapay zekâ incelemesi indirme "
-                                              "bitince yapılacak."}
+            llm = {"status": "error", "error": t("Kaynak dosyalar hâlâ iniyor; yapay zekâ incelemesi indirme "
+                                              "bitince yapılacak.")}
         else:
             ctx = {"pkgname": name, "pkgbase": pkgbase, "installed": installed, "new_version": meta["Version"],
                    "meta": meta, "has_base": bool(base), "commits": commits, "static_findings": findings,
@@ -103,12 +104,12 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
     new_aur_deps, new_repo_deps = deps.review_new_deps(name, old_info, new_info, settings, st, keep_keys)
     if new_aur_deps:
         findings.append(rules._f(rules.MEDIUM, "new-aur-dependency",
-                                 "Güncelleme, kurulu olmayan yeni bir AUR paketini bağımlılık olarak ekliyor",
+                                 t("Güncelleme, kurulu olmayan yeni bir AUR paketini bağımlılık olarak ekliyor"),
                                  ", ".join(d["name"] for d in deps.flatten(new_aur_deps))
-                                 + ". yay bunları da derleyip kurar; aşağıda ayrıca incelendiler."))
+                                 + t(". yay bunları da derleyip kurar; aşağıda ayrıca incelendiler.")))
     if new_repo_deps:
         findings.append(rules._f(rules.INFO, "new-repo-dependency",
-                                 "Resmi depolardan yeni bağımlılık kurulacak", ", ".join(new_repo_deps)))
+                                 t("Resmi depolardan yeni bağımlılık kurulacak"), ", ".join(new_repo_deps)))
     status = deps.combine_status(findings, llm, [d["status"] for d in new_aur_deps])
 
     hold_until = int(meta["LastModified"]) + settings["hold_days"] * 86400
@@ -152,7 +153,7 @@ def inspect_sources(pkgbase: str, name: str, repo, base: str | None, target: str
     """Download and inspect the update's source files; never raises."""
     if not settings["sources"]["enabled"]:
         return None
-    _progress(f"AUR: {name} kaynak dosyaları indiriliyor ve inceleniyor")
+    _progress(t("AUR: {name} kaynak dosyaları indiriliyor ve inceleniyor", name=name))
     try:
         return sources.review(pkgbase, name, target, aur.srcinfo_text(repo, target), base,
                               aur.srcinfo_text(repo, base), settings)
@@ -177,16 +178,16 @@ def _run(settings: dict) -> dict:
     errors: list[str] = []
     st = state.load()
 
-    _progress("Kurulu paketler okunuyor")
+    _progress(t("Kurulu paketler okunuyor"))
     installed = system.installed_packages()
     foreign = {n: v for n, v in system.foreign_packages().items() if not n.endswith("-debug")}
 
-    _progress("Resmi depo güncellemeleri kontrol ediliyor")
+    _progress(t("Resmi depo güncellemeleri kontrol ediliyor"))
     try:
         repo = system.repo_updates()
     except Exception as e:
         repo = []
-        errors.append(f"Resmi depo kontrolü başarısız: {e}")
+        errors.append(t("Resmi depo kontrolü başarısız: {e}", e=e))
     repo_map = system.repo_of([r["name"] for r in repo])
     for r in repo:
         r["repo"] = repo_map.get(r["name"], "?")
@@ -194,28 +195,28 @@ def _run(settings: dict) -> dict:
         r["reboot"] = r["name"] in REBOOT_HINT
         r["major"] = r["old"].split(".")[0].split(":")[-1] != r["new"].split(".")[0].split(":")[-1]
 
-    _progress("Bilinen saldırı listeleri kontrol ediliyor")
+    _progress(t("Bilinen saldırı listeleri kontrol ediliyor"))
     try:
         bad = incidents.fetch_lists(settings["security"]["compromised_lists"])
     except Exception as e:
         bad = {}
-        errors.append(f"Saldırı listeleri alınamadı: {e}")
+        errors.append(t("Saldırı listeleri alınamadı: {e}", e=e))
     rules.KNOWN_BAD = {n: i["campaign"] for n, i in bad.items()}
     try:
         incident_list = incidents.check_lists(bad, foreign, incidents.package_history()) + incidents.shadowing()
     except Exception as e:
         log.exception("incidents")
         incident_list = []
-        errors.append(f"Saldırı izleri kontrol edilemedi: {e}")
+        errors.append(t("Saldırı izleri kontrol edilemedi: {e}", e=e))
 
-    _progress("AUR bilgileri alınıyor")
+    _progress(t("AUR bilgileri alınıyor"))
     aur_items: list[dict] = []
     keep: set[str] = set()
     try:
         metas = aur.rpc_info(sorted(foreign))
     except Exception as e:
         metas = None
-        errors.append(f"AUR'a ulaşılamadı: {e}")
+        errors.append(t("AUR'a ulaşılamadı: {e}", e=e))
     if metas is not None:
         sources.set_deadline(settings["sources"]["time_budget_minutes"] * 60)
         names = sorted(foreign)
@@ -231,20 +232,20 @@ def _run(settings: dict) -> dict:
                 aur_items.append(item)
             state.save(st)  # keep finished reviews even if a later package fails
 
-    _progress("Arch haberleri alınıyor")
+    _progress(t("Arch haberleri alınıyor"))
     last_up = system.last_full_upgrade()
     try:
         news = feeds.fetch_news()
     except Exception as e:
         news = []
-        errors.append(f"Arch haberleri alınamadı: {e}")
+        errors.append(t("Arch haberleri alınamadı: {e}", e=e))
     read = set(st["news_read"])
     for n in news:
         n["read"] = n["id"] in read
         n["since_last_upgrade"] = bool(last_up and n["published"]
                                        and datetime.fromisoformat(n["published"]) > last_up)
     # AI: does it affect this machine? Recent items only; results are cached per item.
-    provider = settings["review"]["active_provider"]
+    provider = settings["review"]["active_provider"] + state._lang_suffix()
     pending_repo = {r["name"]: r["new"] for r in repo}
     recent_cut = time.time() - 60 * 86400
     for n in news:
@@ -253,7 +254,7 @@ def _run(settings: dict) -> dict:
         todo = [n for n in news if not n["ai"] and (n["since_last_upgrade"] or (
             n["published"] and datetime.fromisoformat(n["published"]).timestamp() > recent_cut))][:6]
         for i, n in enumerate(todo, 1):
-            _progress(f"Yapay zekâ haberi değerlendiriyor: {n['title'][:60]}", i, len(todo))
+            _progress(t("Yapay zekâ haberi değerlendiriyor: {v0}", v0=n['title'][:60]), i, len(todo))
             res = newsai.analyze(n, installed, pending_repo, settings)
             if res["status"] == "ok":
                 st["news_ai"][f"{n['id']}#{provider}"] = res
@@ -262,28 +263,28 @@ def _run(settings: dict) -> dict:
     ids = {n["id"] for n in news}
     st["news_ai"] = {k: v for k, v in st["news_ai"].items() if k.split("#", 1)[0] in ids}
 
-    _progress("Güvenlik açıkları kontrol ediliyor")
+    _progress(t("Güvenlik açıkları kontrol ediliyor"))
     pending = {r["name"]: r["new"] for r in repo}
     try:
         vulns = feeds.vulnerable_installed(feeds.fetch_advisories(), installed, pending)
     except Exception as e:
         vulns = []
-        errors.append(f"Güvenlik takipçisine ulaşılamadı: {e}")
+        errors.append(t("Güvenlik takipçisine ulaşılamadı: {e}", e=e))
     fixes = {v["package"] for v in vulns if v["fix_pending"]}
     for r in repo:
         r["fixes_cve"] = r["name"] in fixes
 
-    _progress("Çalışan servisler ve eski kütüphaneler kontrol ediliyor")
+    _progress(t("Çalışan servisler ve eski kütüphaneler kontrol ediliyor"))
     try:
         rt = runtime.snapshot()
     except Exception as e:
         log.exception("runtime snapshot")
         rt = {"services": [], "user_processes": [], "open_ports": [], "reboot_packages": [],
               "reboot_recommended": False, "kernel_updated": False, "boot_time": 0, "_pkg_units": {}}
-        errors.append(f"Çalışan servisler okunamadı: {e}")
+        errors.append(t("Çalışan servisler okunamadı: {e}", e=e))
     pkg_units = rt.pop("_pkg_units")
 
-    _progress("Açıkların etkilediği uygulamalar bulunuyor")
+    _progress(t("Açıkların etkilediği uygulamalar bulunuyor"))
     explicit = set(system.run(["pacman", "-Qeq"]).stdout.split())
     users_cache: dict[str, list[str]] = {}
     sev_rank = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
@@ -300,7 +301,7 @@ def _run(settings: dict) -> dict:
                          - (100 if v.get("stale") else 0))
     vulns.sort(key=lambda v: -v["priority"])
 
-    _progress("CVE ayrıntıları alınıyor (NVD)")
+    _progress(t("CVE ayrıntıları alınıyor (NVD)"))
     cve_pending = 0
     try:
         all_ids = [c for v in vulns for c in v["issues"]]
@@ -308,8 +309,8 @@ def _run(settings: dict) -> dict:
                                             get_secret("nvd"))
     except Exception as e:
         infos = {}
-        errors.append(f"NVD'ye ulaşılamadı: {e}")
-    _progress("Arch paket yamaları kontrol ediliyor")
+        errors.append(t("NVD'ye ulaşılamadı: {e}", e=e))
+    _progress(t("Arch paket yamaları kontrol ediliyor"))
     for v in vulns:
         try:
             patched = cve.arch_patch_evidence(v["package"], v["installed"], v["issues"])
@@ -331,14 +332,14 @@ def _run(settings: dict) -> dict:
         # assessed on demand from the dashboard.
         todo = [v for v in vulns if not v["ai"] and v["evidence_verdict"] != "fixed" and not v["stale"]]
         for i, v in enumerate(todo, 1):
-            _progress(f"Yapay zekâ açıkları değerlendiriyor: {v['package']}", i, len(todo))
+            _progress(t("Yapay zekâ açıkları değerlendiriyor: {package}", package=v['package']), i, len(todo))
             res = vulnai.analyze(v, rt, settings)
             if res["status"] == "ok":
                 st["vuln_ai"][state.vuln_ai_key(v, settings["review"]["active_provider"])] = res
             v["ai"] = res
             state.save(st)
 
-    _progress("Sistem durumu okunuyor")
+    _progress(t("Sistem durumu okunuyor"))
     report = {
         "generated_at": int(time.time()),
         "duration": round(time.time() - started, 1),

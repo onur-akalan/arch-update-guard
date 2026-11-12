@@ -9,6 +9,7 @@ warning does not come back every morning.
 from __future__ import annotations
 
 import time
+from .i18n import t
 
 REMIND_DAYS = 14        # updates waiting longer than this get a gentle reminder...
 REMIND_EVERY_DAYS = 7   # ...at most once a week
@@ -25,22 +26,23 @@ def events(report: dict, st: dict, level: str) -> list[dict]:
         rc = a.get("review_commit") or a.get("target") or a.get("new_version")
         if a["status"] == "danger":
             out.append({"key": f"aur-danger:{a['name']}@{rc}", "critical": True,
-                        "text": f"⚠ {a['name']}: güncellemede tehlikeli bulgu var, kurmadan önce bak"})
+                        "text": t("⚠ {name}: güncellemede tehlikeli bulgu var, kurmadan önce bak", name=a['name'])})
         elif a["status"] in ("warning", "missing"):
             out.append({"key": f"aur-warn:{a['name']}@{rc}", "critical": False,
-                        "text": f"{a['name']}: güncellemede incelemen gereken bir değişiklik var"})
+                        "text": t("{name}: güncellemede incelemen gereken bir değişiklik var", name=a['name'])})
     unread = [n for n in report.get("news", []) if n.get("since_last_upgrade") and n["id"] not in st["news_read"]]
-    when_tr = {"before_update": "güncellemeden önce", "during_update": "güncelleme sırasında",
-               "after_update": "güncellemeden sonra"}
+    when_tr = {"before_update": t("güncellemeden önce"), "during_update": t("güncelleme sırasında"),
+               "after_update": t("güncellemeden sonra")}
     for n in unread:
         ai = n.get("ai") or {}
         if ai.get("status") == "ok" and ai["affects"] == "no" and ai["confidence"] != "low":
             continue  # it does not apply here; it still waits on the dashboard
         if ai.get("status") == "ok" and ai["affects"] == "yes":
             when = when_tr.get(ai["when"])
-            text = f"Arch haberi seni etkiliyor{f' ({when} yapılacak bir şey var)' if when else ''}: {n['title']}"
+            text = (t("Arch haberi seni etkiliyor") + (t(" ({when} yapılacak bir şey var)", when=when) if when else "")
+                    + ": " + n["title"])
         else:
-            text = f"Arch haberi: {n['title']}"
+            text = t("Arch haberi: {title}", title=n["title"])
         out.append({"key": f"news:{n['id']}", "critical": False, "text": text})
     acks = st.get("vuln_ack", {})
     for v in report.get("vulns", []):
@@ -54,15 +56,14 @@ def events(report: dict, st: dict, level: str) -> list[dict]:
             continue
         if v.get("fix_pending"):
             out.append({"key": f"vuln-fix:{v['avg']}:{v['package']}", "critical": False,
-                        "text": f"{v['package']}: bir güvenlik açığı bekleyen güncellemeyle kapanıyor"})
+                        "text": t("{package}: bir güvenlik açığı bekleyen güncellemeyle kapanıyor", package=v['package'])})
         elif v["severity"] in ("Critical", "High"):
             out.append({"key": f"vuln:{v['avg']}:{v['package']}", "critical": v["severity"] == "Critical",
-                        "text": f"{v['package']}: {'kritik' if v['severity'] == 'Critical' else 'yüksek'} önemde açık, "
-                                f"düzeltmesi henüz yok"})
+                        "text": t("{package}: {v1} önemde açık, düzeltmesi henüz yok", package=v['package'], v1=t('kritik') if v['severity'] == 'Critical' else t('yüksek'))})
     pending = len(report.get("repo", [])) + sum(1 for a in report.get("aur", []) if a.get("new_version"))
     if level == "all" and pending:
         out.append({"key": f"updates:{report['generated_at']}", "critical": False,
-                    "text": f"{pending} güncelleme bekliyor"})
+                    "text": t("{pending} güncelleme bekliyor", pending=pending)})
     elif pending:
         last = (report.get("system") or {}).get("last_upgrade")
         if last:
@@ -71,7 +72,7 @@ def events(report: dict, st: dict, level: str) -> list[dict]:
             if age > REMIND_DAYS:
                 week = int(time.time() // (REMIND_EVERY_DAYS * 86400))
                 out.append({"key": f"remind:{week}", "critical": False,
-                            "text": f"{pending} güncelleme bekliyor; son güncelleme {int(age)} gün önce"})
+                            "text": t("{pending} güncelleme bekliyor; son güncelleme {v1} gün önce", pending=pending, v1=int(age))})
     return out
 
 

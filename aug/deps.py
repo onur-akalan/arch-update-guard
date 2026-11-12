@@ -14,6 +14,7 @@ import json
 from . import aur, review, rules, sources, state
 from .feeds import http_get
 from .system import run
+from .i18n import t
 
 MAX_DEPTH = 2
 
@@ -77,10 +78,10 @@ def _review_dep(parent: str, name: str, settings: dict, st: dict, keep_keys: set
     try:
         meta, providers = aur_lookup(name)
     except Exception as e:
-        return {**rec, "status": "error", "error": f"AUR sorgusu başarısız: {e}", "findings": []}
+        return {**rec, "status": "error", "error": t("AUR sorgusu başarısız: {e}", e=e), "findings": []}
     if not meta:
         return {**rec, "status": "error", "findings": [],
-                "error": "Ne resmi depolarda ne de AUR'da bulunamadı; güncelleme büyük olasılıkla derlenemez."}
+                "error": t("Ne resmi depolarda ne de AUR'da bulunamadı; güncelleme büyük olasılıkla derlenemez.")}
     pkg = meta["Name"]
     repo = aur.sync_mirror(meta["PackageBase"])
     target = aur.remote_head(repo)
@@ -97,7 +98,7 @@ def _review_dep(parent: str, name: str, settings: dict, st: dict, keep_keys: set
     review_commit = f"{target}+src{sources.fingerprint(src)}"
     if len(providers) > 1:
         findings.append(rules._f(rules.INFO, "multiple-providers",
-                                 f"'{name}' birden fazla AUR paketi tarafından sağlanıyor; yay hangisini kuracağını soracak",
+                                 t("'{name}' birden fazla AUR paketi tarafından sağlanıyor; yay hangisini kuracağını soracak", name=name),
                                  ", ".join(providers[:8])))
 
     llm = None
@@ -124,7 +125,7 @@ def _review_dep(parent: str, name: str, settings: dict, st: dict, keep_keys: set
         nested, nested_repo = review_new_deps(pkg, {}, info, settings, st, keep_keys, depth + 1, seen)
     elif unsatisfied(info.get("depends", [])):
         findings.append(rules._f(rules.MEDIUM, "deep-deps",
-                                 "Bu bağımlılığın da kurulu olmayan bağımlılıkları var ve incelenmedi"))
+                                 t("Bu bağımlılığın da kurulu olmayan bağımlılıkları var ve incelenmedi")))
 
     return {**rec, "name": pkg, "pkgbase": meta["PackageBase"], "version": meta["Version"], "target": target,
             "status": combine_status(findings, llm, [n["status"] for n in nested]),

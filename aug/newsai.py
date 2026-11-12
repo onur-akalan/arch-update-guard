@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 from . import review
+from .i18n import t
 
 SCHEMA = {
     "type": "object",
@@ -169,7 +170,7 @@ def build_prompt(news: dict, f: dict, pending_count: int) -> str:
 
 def _clean(d: dict) -> dict:
     if not isinstance(d, dict) or d.get("affects") not in ("yes", "no", "maybe"):
-        raise ValueError("geçersiz yanıt")
+        raise ValueError(t("geçersiz yanıt"))
     acts = []
     for a in d.get("actions") or []:
         if isinstance(a, dict):

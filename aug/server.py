@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 from . import __version__, check, deps, newsai, review, rules, schedule, sources, state, system, updater, vulnai
 from .config import (SERVER_FILE, WEB_DIR, SettingsError, atomic_write_json, delete_secret, get_secret,
                      load_settings, read_json, save_settings, set_secret, validate_settings)
+from .i18n import set_language, t
 
 log = logging.getLogger("aug")
 IDLE_EXIT_SECONDS = 20 * 60
@@ -59,11 +60,11 @@ class App:
         report = check.load_report()
         v = next((x for x in (report or {}).get("vulns", []) if x["avg"] == avg and x["package"] == package), None)
         if not v:
-            raise ValueError("Kayıt güncel raporda yok.")
+            raise ValueError(t("Kayıt güncel raporda yok."))
         key = f"{avg}:{package}"
         with self.lock:
             if key in self.vuln_busy:
-                raise ValueError("Bu kayıt zaten analiz ediliyor.")
+                raise ValueError(t("Bu kayıt zaten analiz ediliyor."))
             self.vuln_busy.add(key)
         try:
             settings = load_settings()
@@ -86,16 +87,16 @@ class App:
         report = check.load_report()
         n = next((x for x in (report or {}).get("news", []) if x["id"] == news_id), None)
         if not n:
-            raise ValueError("Haber güncel raporda yok.")
+            raise ValueError(t("Haber güncel raporda yok."))
         with self.lock:
             if news_id in self.news_busy:
-                raise ValueError("Bu haber zaten değerlendiriliyor.")
+                raise ValueError(t("Bu haber zaten değerlendiriliyor."))
             self.news_busy.add(news_id)
         try:
             settings = load_settings()
             pending = {r["name"]: r["new"] for r in report.get("repo", [])}
             res = newsai.analyze(n, system.installed_packages(), pending, settings, provider_id)
-            pid = provider_id or settings["review"]["active_provider"]
+            pid = (provider_id or settings["review"]["active_provider"]) + state._lang_suffix()
             if res["status"] == "ok":
                 with state.mutate() as st:
                     st["news_ai"][f"{news_id}#{pid}"] = res
@@ -133,13 +134,13 @@ class App:
     def rereview(self, name: str, provider_id: str | None) -> dict:
         report = check.load_report()
         if not report:
-            raise ValueError("Önce bir kontrol çalıştır.")
+            raise ValueError(t("Önce bir kontrol çalıştır."))
         item = next((a for a in report["aur"] if a["name"] == name), None)
         if not item or not item.get("diff"):
-            raise ValueError("Bu paket için incelenecek bir diff yok.")
+            raise ValueError(t("Bu paket için incelenecek bir diff yok."))
         with self.lock:
             if name in self.review_busy:
-                raise ValueError("Bu paket zaten inceleniyor.")
+                raise ValueError(t("Bu paket zaten inceleniyor."))
             self.review_busy.add(name)
         try:
             settings = load_settings()
@@ -241,7 +242,7 @@ def make_handler(app: App, port: int):
         def _body(self) -> dict:
             n = int(self.headers.get("Content-Length") or 0)
             if n > 2_000_000:
-                raise ValueError("istek çok büyük")
+                raise ValueError(t("istek çok büyük"))
             return json.loads(self.rfile.read(n) or b"{}")
 
         # -- routing -----------------------------------------------------
@@ -257,7 +258,7 @@ def make_handler(app: App, port: int):
                 return self._send(303, b"", "text/plain", {
                     "Location": "/", "Set-Cookie": f"aug={app.token}; Path=/; HttpOnly; SameSite=Strict"})
             if not self._authorized():
-                return self._send(403, "Erişim reddedildi. Panoyu 'aug open' ile aç.".encode(),
+                return self._send(403, t("Erişim reddedildi. Panoyu 'aug open' ile aç.").encode(),
                                   "text/plain; charset=utf-8")
             if url.path == "/":
                 return self._static("index.html")
@@ -267,7 +268,7 @@ def make_handler(app: App, port: int):
                 return self._json(self._state())
             if url.path == "/api/settings":
                 return self._json(_public_settings(load_settings()))
-            return self._error("bulunamadı", 404)
+            return self._error(t("bulunamadı"), 404)
 
         def do_POST(self):
             app.last_request = time.time()
@@ -278,18 +279,18 @@ def make_handler(app: App, port: int):
                 body = self._body()
                 handler = ROUTES.get(path)
                 if not handler:
-                    return self._error("bulunamadı", 404)
+                    return self._error(t("bulunamadı"), 404)
                 return self._json(handler(body))
             except (ValueError, SettingsError, updater.UpdateError) as e:
                 return self._error(str(e))
             except Exception as e:
                 log.exception("POST %s", path)
-                return self._error(f"Beklenmeyen hata: {type(e).__name__}: {e}", 500)
+                return self._error(t("Beklenmeyen hata: {err}", err=f"{type(e).__name__}: {e}"), 500)
 
         def _static(self, rel: str):
             p = (WEB_DIR / rel).resolve()
             if WEB_DIR.resolve() not in p.parents or not p.is_file():
-                return self._error("bulunamadı", 404)
+                return self._error(t("bulunamadı"), 404)
             ctype = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
             if ctype.startswith("text/") or ctype in ("application/javascript",):
                 ctype += "; charset=utf-8"
@@ -326,9 +327,9 @@ def make_handler(app: App, port: int):
         item = next((a for a in report["aur"]
                      if a["name"] == name and a.get("target") and a.get("approval_key", a["target"]) == commit), None)
         if not item:
-            raise ValueError("Paket ya da commit güncel raporda yok; yeniden kontrol et.")
+            raise ValueError(t("Paket ya da commit güncel raporda yok; yeniden kontrol et."))
         if item["status"] in ("danger", "warning") and body.get("confirm") != name:
-            raise ValueError("Uyarılı paketi onaylamak için paket adını yazman gerekiyor.")
+            raise ValueError(t("Uyarılı paketi onaylamak için paket adını yazman gerekiyor."))
         with state.mutate() as st:
             st["approvals"][name] = {"commit": commit, "at": int(time.time()), "status": item["status"]}
             st["maintainers"][item["pkgbase"]] = item.get("maintainer") or rules.ORPHAN
@@ -344,6 +345,7 @@ def make_handler(app: App, port: int):
 
     def r_settings(body):
         saved = save_settings(body)
+        set_language(saved["language"])
         schedule_msg = schedule.apply(saved["schedule"])
         return {"settings": _public_settings(saved), "schedule": schedule_msg}
 
@@ -351,7 +353,7 @@ def make_handler(app: App, port: int):
         pid = body.get("provider")
         settings = load_settings()
         if pid != "nvd" and not any(p["id"] == pid for p in settings["providers"]):
-            raise ValueError("Önce sağlayıcıyı kaydet.")
+            raise ValueError(t("Önce sağlayıcıyı kaydet."))
         value = body.get("value")
         if value:
             set_secret(pid, value.strip())
@@ -366,11 +368,11 @@ def make_handler(app: App, port: int):
     def r_update(body):
         report = check.load_report()
         if not report:
-            raise ValueError("Önce bir kontrol çalıştır.")
+            raise ValueError(t("Önce bir kontrol çalıştır."))
         if app.busy():
-            raise ValueError("Kontrol sürüyor; bitmesini bekle.")
+            raise ValueError(t("Kontrol sürüyor; bitmesini bekle."))
         if time.time() - report["generated_at"] > 6 * 3600:
-            raise ValueError("Rapor 6 saatten eski; önce yeniden kontrol et.")
+            raise ValueError(t("Rapor 6 saatten eski; önce yeniden kontrol et."))
         report = _decorate_report(report)
         return updater.launch(report, body.get("aur") or [], bool(body.get("news_ack")))
 
@@ -378,7 +380,7 @@ def make_handler(app: App, port: int):
         report = check.load_report() or {"vulns": []}
         v = next((x for x in report["vulns"] if x["avg"] == body.get("avg") and x["package"] == body.get("package")), None)
         if not v:
-            raise ValueError("Kayıt güncel raporda yok.")
+            raise ValueError(t("Kayıt güncel raporda yok."))
         key = f"{v['avg']}:{v['package']}"
         with state.mutate() as st:
             if body.get("undo"):
@@ -400,7 +402,7 @@ def make_handler(app: App, port: int):
     def r_restart(body):
         report = check.load_report()
         if not report:
-            raise ValueError("Önce bir kontrol çalıştır.")
+            raise ValueError(t("Önce bir kontrol çalıştır."))
         return updater.launch_restart(report, body.get("units") or [])
 
     ROUTES = {"/api/news/analyze": r_news_analyze, "/api/vuln/analyze": r_vuln_analyze, "/api/vuln/analyze-all": r_vuln_analyze_all,

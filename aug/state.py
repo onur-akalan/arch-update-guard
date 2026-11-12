@@ -9,13 +9,20 @@ import time
 from contextlib import contextmanager
 
 from .config import RUNTIME_DIR, STATE_FILE, atomic_write_json, read_json
+from .i18n import t
 
 DEFAULT_STATE = {"reviews": {}, "approvals": {}, "maintainers": {}, "news_read": [], "vuln_ack": {},
                  "vuln_ai": {}, "news_ai": {}, "notified": {}, "last_check": None}
 
 
+def _lang_suffix() -> str:
+    """AI results are written in the interface language; keep one cache entry per language."""
+    from .i18n import language
+    return "" if language() == "tr" else f"@{language()}"
+
+
 def vuln_ai_key(v: dict, provider: str | None) -> str:
-    return f"{v['avg']}:{v['package']}:{v['installed']}#{provider or '-'}"
+    return f"{v['avg']}:{v['package']}:{v['installed']}#{provider or '-'}{_lang_suffix()}"
 _lock = threading.RLock()
 
 
@@ -41,7 +48,7 @@ def mutate():
 
 
 def review_key(pkgbase: str, commit: str, provider: str | None) -> str:
-    return f"{pkgbase}@{commit}#{provider or '-'}"
+    return f"{pkgbase}@{commit}#{provider or '-'}{_lang_suffix()}"
 
 
 def prune_reviews(s: dict, keep_keys: set[str], max_age_days: int = 60) -> None:
@@ -61,7 +68,7 @@ def check_lock():
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise CheckRunning("başka bir kontrol zaten çalışıyor")
+            raise CheckRunning(t("başka bir kontrol zaten çalışıyor"))
         yield
     finally:
         os.close(fd)

@@ -1,24 +1,50 @@
 "use strict";
 
+// ---------- i18n ----------
+// Turkish source strings are the keys; web/i18n/<lang>.json maps them to other
+// languages. Text produced by the backend already arrives in the chosen language.
+let DICT = {};
+let LANG = "tr";
+function t(s, vars) {
+  let out = DICT[s] ?? s;
+  if (vars) out = out.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
+  return out;
+}
+const LOCALE = () => (LANG === "en" ? "en-GB" : "tr-TR");
+async function loadLanguage(lang) {
+  LANG = lang === "en" ? "en" : "tr";
+  document.documentElement.lang = LANG;
+  if (LANG === "tr") { DICT = {}; return; }
+  try {
+    const r = await fetch(`/static/i18n/${LANG}.json`);
+    if (r.ok) DICT = await r.json();
+  } catch { DICT = {}; }  // fail soft: stay in Turkish
+}
+function applyStatic() {
+  document.querySelectorAll("[data-i18n]").forEach((el) => (el.textContent = t(el.dataset.i18n)));
+  document.querySelectorAll("[data-i18n-aria]").forEach((el) => el.setAttribute("aria-label", t(el.dataset.i18nAria)));
+}
+
 // ---------- helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const fmtDate = (ts) => ts ? new Date(typeof ts === "number" ? ts * 1000 : ts).toLocaleString("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
-const fmtDay = (ts) => ts ? new Date(typeof ts === "number" ? ts * 1000 : ts).toLocaleDateString("tr-TR", { day: "numeric", month: "long", year: "numeric" }) : "—";
+const fmtDate = (ts) => ts ? new Date(typeof ts === "number" ? ts * 1000 : ts).toLocaleString(LOCALE(), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+const fmtDay = (ts) => ts ? new Date(typeof ts === "number" ? ts * 1000 : ts).toLocaleDateString(LOCALE(), { day: "numeric", month: "long", year: "numeric" }) : "—";
+const fmtNum = (n) => Number(n).toLocaleString(LOCALE());
 function ago(ts) {
-  if (!ts) return "hiç";
+  if (!ts) return t("hiç");
   const s = Math.round(Date.now() / 1000 - ts);
-  if (s < 60) return "az önce";
-  if (s < 3600) return `${Math.floor(s / 60)} dk önce`;
-  if (s < 86400) return `${Math.floor(s / 3600)} sa önce`;
-  return `${Math.floor(s / 86400)} gün önce`;
+  if (s < 60) return t("az önce");
+  if (s < 3600) return t("{n} dk önce", { n: Math.floor(s / 60) });
+  if (s < 86400) return t("{n} sa önce", { n: Math.floor(s / 3600) });
+  return t("{n} gün önce", { n: Math.floor(s / 86400) });
 }
 function until(ts) {
   const s = Math.round(ts - Date.now() / 1000);
-  if (s <= 0) return "şimdi";
-  if (s < 3600) return `${Math.ceil(s / 60)} dk`;
-  if (s < 86400) return `${Math.round(s / 3600)} sa`;
-  return `${Math.round(s / 86400 * 10) / 10} gün`;
+  if (s <= 0) return t("şimdi");
+  if (s < 3600) return t("{n} dk", { n: Math.ceil(s / 60) });
+  if (s < 86400) return t("{n} sa", { n: Math.round(s / 3600) });
+  return t("{n} gün", { n: Math.round(s / 86400 * 10) / 10 });
 }
 
 async function api(path, body) {
@@ -36,11 +62,11 @@ async function api(path, body) {
 
 let toastTimer;
 function toast(msg, isError = false) {
-  const t = $("#toast");
-  t.textContent = msg;
-  t.className = "show" + (isError ? " error" : "");
+  const el = $("#toast");
+  el.textContent = msg;
+  el.className = "show" + (isError ? " error" : "");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.className = ""), isError ? 6000 : 3000);
+  toastTimer = setTimeout(() => (el.className = ""), isError ? 6000 : 3000);
 }
 
 // ---------- state ----------
@@ -54,17 +80,18 @@ const ui = {
   pollTimer: null,
 };
 
-const STATUS = {
-  clean: ["ok", "Temiz"],
-  warning: ["warn", "Dikkat"],
-  danger: ["danger", "Tehlikeli"],
-  unreviewed: ["neutral", "İncelenmedi"],
-  missing: ["warn", "AUR'da yok"],
-  error: ["danger", "Hata"],
-};
-const SEV = { high: ["danger", "Yüksek"], medium: ["warn", "Orta"], low: ["info", "Düşük"], info: ["info", "Bilgi"] };
+// Label maps are functions so they pick up the dictionary loaded at startup.
+const STATUS = () => ({
+  clean: ["ok", t("Temiz")],
+  warning: ["warn", t("Dikkat")],
+  danger: ["danger", t("Tehlikeli")],
+  unreviewed: ["neutral", t("İncelenmedi")],
+  missing: ["warn", t("AUR'da yok")],
+  error: ["danger", t("Hata")],
+});
+const SEV = () => ({ high: ["danger", t("Yüksek")], medium: ["warn", t("Orta")], low: ["info", t("Düşük")], info: ["info", t("Bilgi")] });
 const AVG_SEV = { Critical: "danger", High: "danger", Medium: "warn", Low: "info", Unknown: "neutral" };
-const AVG_SEV_TR = { Critical: "Kritik", High: "Yüksek", Medium: "Orta", Low: "Düşük", Unknown: "Bilinmiyor" };
+const AVG_SEV_TR = () => ({ Critical: t("Kritik"), High: t("Yüksek"), Medium: t("Orta"), Low: t("Düşük"), Unknown: t("Bilinmiyor") });
 
 const keyOf = (a) => `${a.name}@${a.target}`;
 const canSelect = (a) => a.target && (a.approved || a.auto_ok);
@@ -76,14 +103,14 @@ async function refresh() {
     ui.data = await api("/api/state");
     render();
   } catch (e) {
-    $("#status-line").textContent = "Sunucuya ulaşılamıyor: " + e.message;
+    $("#status-line").textContent = t("Sunucuya ulaşılamıyor: {msg}", { msg: e.message });
   }
   schedulePoll();
 }
 function schedulePoll() {
   clearTimeout(ui.pollTimer);
   const d = ui.data;
-  const fast = d && (d.busy || d.update?.running || (d.reviewing || []).length || (d.analyzing || []).length);
+  const fast = d && (d.busy || d.update?.running || (d.reviewing || []).length || (d.analyzing || []).length || (d.news_analyzing || []).length);
   ui.pollTimer = setTimeout(refresh, fast ? 2000 : 30000);
 }
 
@@ -95,9 +122,9 @@ function render() {
   const app = $("#app");
   if (!r) {
     app.innerHTML = `<div class="card card-pad empty">
-      <h2>Henüz kontrol yapılmadı</h2>
-      <p>İlk kontrol resmi depoları, AUR paketlerini, Arch haberlerini ve güvenlik açıklarını tarar.</p>
-      <button class="btn primary" data-act="check" ${d.busy ? "disabled" : ""}>İlk kontrolü başlat</button></div>`;
+      <h2>${t("Henüz kontrol yapılmadı")}</h2>
+      <p>${t("İlk kontrol resmi depoları, AUR paketlerini, Arch haberlerini ve güvenlik açıklarını tarar.")}</p>
+      <button class="btn primary" data-act="check" ${d.busy ? "disabled" : ""}>${t("İlk kontrolü başlat")}</button></div>`;
     return;
   }
   const scrollY = window.scrollY;
@@ -108,11 +135,11 @@ function render() {
 function renderTop(d) {
   const r = d.report;
   const line = r
-    ? `Son kontrol ${ago(r.generated_at)} (${fmtDate(r.generated_at)}) · ${r.system.installed_count} paket kurulu`
-    : "Henüz kontrol yapılmadı";
+    ? t("Son kontrol {ago} ({date}) · {n} paket kurulu", { ago: ago(r.generated_at), date: fmtDate(r.generated_at), n: r.system.installed_count })
+    : t("Henüz kontrol yapılmadı");
   $("#status-line").textContent = line;
   $("#btn-check").disabled = d.busy;
-  $("#btn-check").textContent = d.busy ? "Kontrol ediliyor…" : "Şimdi kontrol et";
+  $("#btn-check").textContent = d.busy ? t("Kontrol ediliyor…") : t("Şimdi kontrol et");
   const p = $("#progress");
   p.hidden = !d.busy;
   if (d.busy) {
@@ -125,7 +152,7 @@ function renderTop(d) {
       fill.className = "indeterminate";
       fill.style.width = "";
     }
-    $("#progress-text").textContent = (pr.message || "Hazırlanıyor") + (pr.total ? ` (${pr.done}/${pr.total})` : "");
+    $("#progress-text").textContent = (pr.message || t("Hazırlanıyor")) + (pr.total ? ` (${pr.done}/${pr.total})` : "");
   }
 }
 
@@ -134,30 +161,31 @@ function renderAlerts(d, r) {
   for (const i of (r.incidents || []).filter((x) => x.severity === "high"))
     out.push(alertBox("danger", "⛔", esc(i.title), esc(i.detail)));
   const oldBad = (r.incidents || []).filter((x) => x.severity !== "high");
-  if (oldBad.length) out.push(alertBox("info", "ℹ", "Kurulu bazı paketler bilinen bir saldırı listesinde, ama saldırıdan önce kurulmuş",
-    `${oldBad.map((x) => `<b>${esc(x.package)}</b> (${esc(x.campaign)})`).join(", ")}. Zararlı sürüm kurulmamış görünüyor; bir sonraki güncellemelerini dikkatle incele.`));
+  if (oldBad.length) out.push(alertBox("info", "ℹ", t("Kurulu bazı paketler bilinen bir saldırı listesinde, ama saldırıdan önce kurulmuş"),
+    t("{list}. Zararlı sürüm kurulmamış görünüyor; bir sonraki güncellemelerini dikkatle incele.",
+      { list: oldBad.map((x) => `<b>${esc(x.package)}</b> (${esc(x.campaign)})`).join(", ") })));
   const danger = r.aur.filter((a) => a.status === "danger");
-  if (danger.length) out.push(alertBox("danger", "⛔", `${danger.length} AUR güncellemesinde tehlikeli bulgu var`,
-    `İncelemeden kurma: ${danger.map((a) => `<b>${esc(a.name)}</b>`).join(", ")}. Ayrıntılar AUR sekmesinde.`));
+  if (danger.length) out.push(alertBox("danger", "⛔", t("{n} AUR güncellemesinde tehlikeli bulgu var", { n: danger.length }),
+    t("İncelemeden kurma: {list}. Ayrıntılar AUR sekmesinde.", { list: danger.map((a) => `<b>${esc(a.name)}</b>`).join(", ") })));
   const missing = r.aur.filter((a) => a.status === "missing");
-  if (missing.length) out.push(alertBox("warn", "⚠", "Kurulu bazı paketler artık AUR'da yok",
-    `${missing.map((a) => esc(a.name)).join(", ")}. AUR'dan kaldırılan paketler bazen zararlı oldukları için silinir; neden kaldırıldığına bak.`));
+  if (missing.length) out.push(alertBox("warn", "⚠", t("Kurulu bazı paketler artık AUR'da yok"),
+    t("{list}. AUR'dan kaldırılan paketler bazen zararlı oldukları için silinir; neden kaldırıldığına bak.", { list: missing.map((a) => esc(a.name)).join(", ") })));
   const unread = r.news.filter((n) => n.since_last_upgrade && !n.read);
-  if (unread.length) out.push(alertBox("warn", "📰", "Son güncellemenden sonra Arch haberi yayımlandı",
-    `Güncellemeden önce oku: <ul>${unread.map((n) => `<li><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a>${renderNewsAi(n.ai, true)}</li>`).join("")}</ul>`));
+  if (unread.length) out.push(alertBox("warn", "📰", t("Son güncellemenden sonra Arch haberi yayımlandı"),
+    `${t("Güncellemeden önce oku:")} <ul>${unread.map((n) => `<li><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a>${renderNewsAi(n.ai, true)}</li>`).join("")}</ul>`));
   const rt = r.runtime;
-  if (rt && rt.reboot_recommended) out.push(alertBox("info", "↻", "Bilgisayarı yeniden başlatman öneriliyor",
-    `${rt.kernel_updated ? "Çalışan çekirdek güncellendi. " : ""}${rt.reboot_packages.length ? `Açılıştan sonra güncellenen temel paketler: ${esc(rt.reboot_packages.join(", "))}. ` : ""}Ayrıntılar Sistem sekmesinde.`));
-  else if (rt && rt.services.some((s) => s.safe)) out.push(alertBox("info", "↻", `${rt.services.filter((s) => s.safe).length} servis eski kütüphaneyle çalışıyor`,
-    "Güncellemenin bu servislerde etkin olması için yeniden başlatılmaları gerekiyor. Sistem sekmesinden tek tıkla yapabilirsin."));
-  else if (r.system.reboot_needed) out.push(alertBox("info", "↻", "Yeniden başlatma bekliyor", "Çalışan çekirdek güncellendi; değişikliklerin etkin olması için bilgisayarı yeniden başlat."));
-  if (d.check_error) out.push(alertBox("danger", "✕", "Son kontrol başarısız oldu", esc(d.check_error)));
-  for (const e of r.errors) out.push(alertBox("warn", "⚠", "Kontrolün bir bölümü tamamlanamadı", esc(e)));
+  if (rt && rt.reboot_recommended) out.push(alertBox("info", "↻", t("Bilgisayarı yeniden başlatman öneriliyor"),
+    `${rt.kernel_updated ? t("Çalışan çekirdek güncellendi.") + " " : ""}${rt.reboot_packages.length ? t("Açılıştan sonra güncellenen temel paketler: {list}.", { list: esc(rt.reboot_packages.join(", ")) }) + " " : ""}${t("Ayrıntılar Sistem sekmesinde.")}`));
+  else if (rt && rt.services.some((s) => s.safe)) out.push(alertBox("info", "↻", t("{n} servis eski kütüphaneyle çalışıyor", { n: rt.services.filter((s) => s.safe).length }),
+    t("Güncellemenin bu servislerde etkin olması için yeniden başlatılmaları gerekiyor. Sistem sekmesinden tek tıkla yapabilirsin.")));
+  else if (r.system.reboot_needed) out.push(alertBox("info", "↻", t("Yeniden başlatma bekliyor"), t("Çalışan çekirdek güncellendi; değişikliklerin etkin olması için bilgisayarı yeniden başlat.")));
+  if (d.check_error) out.push(alertBox("danger", "✕", t("Son kontrol başarısız oldu"), esc(d.check_error)));
+  for (const e of r.errors) out.push(alertBox("warn", "⚠", t("Kontrolün bir bölümü tamamlanamadı"), esc(e)));
   const last = d.update?.last;
   if (last && last.finished && Date.now() / 1000 - last.finished < 3600) {
     const ok = last.repo_rc === 0 && (last.aur_rc === 0 || last.aur_rc === -1);
-    out.push(alertBox(ok ? "info" : "danger", ok ? "✓" : "✕", ok ? "Güncelleme tamamlandı" : "Güncelleme hatayla bitti",
-      `${fmtDate(last.finished)} · pacman kodu ${last.repo_rc}, yay kodu ${last.aur_rc}${last.aur ? " · AUR: " + esc(last.aur) : ""}`));
+    out.push(alertBox(ok ? "info" : "danger", ok ? "✓" : "✕", ok ? t("Güncelleme tamamlandı") : t("Güncelleme hatayla bitti"),
+      `${fmtDate(last.finished)} · ${t("pacman kodu {a}, yay kodu {b}", { a: last.repo_rc, b: last.aur_rc })}${last.aur ? " · AUR: " + esc(last.aur) : ""}`));
   }
   return out.length ? `<section class="alerts">${out.join("")}</section>` : "";
 }
@@ -179,10 +207,10 @@ function renderStats(r) {
   const stat = (tab, label, value, sub) =>
     `<button class="card stat" data-tab="${tab}"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></button>`;
   return `<section class="stats">
-    ${stat("repo", "Resmi depo güncellemesi", r.repo.length, `${imp ? `<span>${imp} önemli</span>` : ""}${cve ? `<span>${cve} güvenlik düzeltmesi</span>` : ""}${!imp && !cve ? "imzalı resmi paketler" : ""}`)}
-    ${stat("aur", "AUR güncellemesi", aurUp.length, bad ? `<span class="badge warn">${bad} dikkat</span>` : unrev ? `<span>${unrev} incelenmedi</span>` : "sorun bulunmadı")}
-    ${stat("vulns", "Bilinen güvenlik açığı", activeV.length, `${highV ? `<span>${highV} yüksek/kritik</span>` : ""}<span>${fixable} bu güncellemeyle kapanıyor</span>${setAside ? `<span>${setAside} düzeltilmiş/eski kayıt ayrıldı</span>` : ""}`)}
-    ${stat("news", "Yeni Arch haberi", unread, unread ? "son güncellemenden sonra yayımlandı" : latest ? `son haber: ${fmtDay(latest.published)}` : "haber alınamadı")}
+    ${stat("repo", t("Resmi depo güncellemesi"), r.repo.length, `${imp ? `<span>${t("{n} önemli", { n: imp })}</span>` : ""}${cve ? `<span>${t("{n} güvenlik düzeltmesi", { n: cve })}</span>` : ""}${!imp && !cve ? t("imzalı resmi paketler") : ""}`)}
+    ${stat("aur", t("AUR güncellemesi"), aurUp.length, bad ? `<span class="badge warn">${t("{n} dikkat", { n: bad })}</span>` : unrev ? `<span>${t("{n} incelenmedi", { n: unrev })}</span>` : t("sorun bulunmadı"))}
+    ${stat("vulns", t("Bilinen güvenlik açığı"), activeV.length, `${highV ? `<span>${t("{n} yüksek/kritik", { n: highV })}</span>` : ""}<span>${t("{n} bu güncellemeyle kapanıyor", { n: fixable })}</span>${setAside ? `<span>${t("{n} düzeltilmiş/eski kayıt ayrıldı", { n: setAside })}</span>` : ""}`)}
+    ${stat("news", t("Yeni Arch haberi"), unread, unread ? t("son güncellemenden sonra yayımlandı") : latest ? t("son haber: {date}", { date: fmtDay(latest.published) }) : t("haber alınamadı"))}
   </section>`;
 }
 
@@ -194,15 +222,16 @@ function renderPlan(d, r) {
   const nothing = !r.repo.length && !sel.length;
   const blocked = (unread.length && !ui.newsAck) || running || d.busy || nothing;
   const stale = Date.now() / 1000 - r.generated_at > 6 * 3600;
+  const ST = STATUS();
   const rows = aur.map((a) => {
-    const [cls, label] = STATUS[a.status] || ["neutral", a.status];
+    const [cls, label] = ST[a.status] || ["neutral", a.status];
     let why;
-    if (a.approved) why = "Elle onaylandı";
-    else if (a.auto_ok) why = "İnceleme temiz, bekleme süresi doldu";
-    else if (srcPending(a)) why = "Kaynak dosyalar hâlâ iniyor; incelenince seçilebilir (elle onaylayabilirsin)";
-    else if (a.status === "clean" && a.held) why = `Bekleme süresinde: ${until(a.hold_until)} sonra hazır (${fmtDate(a.hold_until)})`;
-    else if (a.status === "unreviewed") why = "İncelenmedi; diff'e bakıp elle onaylaman gerekiyor";
-    else why = "Bulgular var; incelemeden onaylanamaz";
+    if (a.approved) why = t("Elle onaylandı");
+    else if (a.auto_ok) why = t("İnceleme temiz, bekleme süresi doldu");
+    else if (srcPending(a)) why = t("Kaynak dosyalar hâlâ iniyor; incelenince seçilebilir (elle onaylayabilirsin)");
+    else if (a.status === "clean" && a.held) why = t("Bekleme süresinde: {left} sonra hazır ({date})", { left: until(a.hold_until), date: fmtDate(a.hold_until) });
+    else if (a.status === "unreviewed") why = t("İncelenmedi; diff'e bakıp elle onaylaman gerekiyor");
+    else why = t("Bulgular var; incelemeden onaylanamaz");
     return `<label class="plan-row">
       <input type="checkbox" data-sel="${esc(keyOf(a))}" ${isSelected(a) ? "checked" : ""} ${canSelect(a) ? "" : "disabled"}>
       <span><b>${esc(a.name)}</b> <span class="ver">${esc(a.installed)} → <b>${esc(a.new_version)}</b></span></span>
@@ -212,20 +241,20 @@ function renderPlan(d, r) {
   return `<section class="card card-pad">
     <div class="plan">
       <div>
-        <h2>Güncelleme planı</h2>
-        <p class="muted small" style="margin:4px 0 0">${r.repo.length} resmi depo paketinin hepsi güncellenir (Arch'ta kısmi güncelleme desteklenmez). AUR paketlerinden yalnızca işaretlediklerin kurulur.</p>
-        ${aur.length ? `<div class="plan-list">${rows}</div>` : `<p class="muted small">Bekleyen AUR güncellemesi yok.</p>`}
+        <h2>${t("Güncelleme planı")}</h2>
+        <p class="muted small" style="margin:4px 0 0">${t("{n} resmi depo paketinin hepsi güncellenir (Arch'ta kısmi güncelleme desteklenmez). AUR paketlerinden yalnızca işaretlediklerin kurulur.", { n: r.repo.length })}</p>
+        ${aur.length ? `<div class="plan-list">${rows}</div>` : `<p class="muted small">${t("Bekleyen AUR güncellemesi yok.")}</p>`}
       </div>
       <div class="plan-side">
         <div class="checks">
-          <span>${r.system.autosnap ? "✓ Timeshift kurulumdan önce anlık görüntü alacak" : "⚠ timeshift-autosnap bulunamadı"}</span>
-          <span>${r.system.disk_free_gb > 10 ? "✓" : "⚠"} ${r.system.disk_free_gb} GB boş alan</span>
-          <span>${stale ? "⚠ Rapor 6 saatten eski, önce yeniden kontrol et" : `✓ Rapor güncel (${ago(r.generated_at)})`}</span>
+          <span>${r.system.autosnap ? "✓ " + t("Timeshift kurulumdan önce anlık görüntü alacak") : "⚠ " + t("timeshift-autosnap bulunamadı")}</span>
+          <span>${r.system.disk_free_gb > 10 ? "✓" : "⚠"} ${t("{n} GB boş alan", { n: r.system.disk_free_gb })}</span>
+          <span>${stale ? "⚠ " + t("Rapor 6 saatten eski, önce yeniden kontrol et") : "✓ " + t("Rapor güncel ({ago})", { ago: ago(r.generated_at) })}</span>
         </div>
-        ${unread.length ? `<label class="ack"><input type="checkbox" id="news-ack" ${ui.newsAck ? "checked" : ""}><span>Son güncellememden sonra yayımlanan ${unread.length} Arch haberini okudum.</span></label>` : ""}
+        ${unread.length ? `<label class="ack"><input type="checkbox" id="news-ack" ${ui.newsAck ? "checked" : ""}><span>${t("Son güncellememden sonra yayımlanan {n} Arch haberini okudum.", { n: unread.length })}</span></label>` : ""}
         <button class="btn primary lg" data-act="update" ${blocked || stale ? "disabled" : ""}>
-          ${running ? "Güncelleme sürüyor…" : nothing ? "Güncellenecek bir şey yok" : `Güncellemeyi başlat (${r.repo.length + sel.length} paket)`}</button>
-        <span class="muted small">Konsole penceresinde açılır; parolanı ve pacman sorularını orada yanıtlarsın.</span>
+          ${running ? t("Güncelleme sürüyor…") : nothing ? t("Güncellenecek bir şey yok") : t("Güncellemeyi başlat ({n} paket)", { n: r.repo.length + sel.length })}</button>
+        <span class="muted small">${t("Konsole penceresinde açılır; parolanı ve pacman sorularını orada yanıtlarsın.")}</span>
       </div>
     </div>
   </section>`;
@@ -234,10 +263,10 @@ function renderPlan(d, r) {
 function renderTabs(r) {
   const tabs = [
     ["aur", "AUR", r.aur.length],
-    ["repo", "Resmi depo", r.repo.length],
-    ["vulns", "Güvenlik", r.vulns.filter((v) => vulnGroup(v) === "active").length],
-    ["news", "Haberler", r.news.filter((n) => n.since_last_upgrade && !n.read).length || ""],
-    ["system", "Sistem", r.system.pacnew.length || ""],
+    ["repo", t("Resmi depo"), r.repo.length],
+    ["vulns", t("Güvenlik"), r.vulns.filter((v) => vulnGroup(v) === "active").length],
+    ["news", t("Haberler"), r.news.filter((n) => n.since_last_upgrade && !n.read).length || ""],
+    ["system", t("Sistem"), r.system.pacnew.length || ""],
   ];
   const body = { aur: renderAur, repo: renderRepo, vulns: renderVulns, news: renderNews, system: renderSystem }[ui.tab](r);
   return `<section class="card">
@@ -248,34 +277,34 @@ function renderTabs(r) {
 
 function renderAur(r) {
   if (!r.aur.length) {
-    return `<div class="empty">Bekleyen AUR güncellemesi yok. ${r.system.foreign_count} AUR paketinin hepsi güncel ve AUR'da duruyor.</div>`;
+    return `<div class="empty">${t("Bekleyen AUR güncellemesi yok. {n} AUR paketinin hepsi güncel ve AUR'da duruyor.", { n: r.system.foreign_count })}</div>`;
   }
   const order = { danger: 0, error: 1, missing: 2, warning: 3, unreviewed: 4, clean: 5 };
   const items = [...r.aur].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || a.name.localeCompare(b.name));
   const reviewing = new Set(ui.data.reviewing || []);
   return `<div class="pkgs">${items.map((a) => renderPkg(a, reviewing.has(a.name), r)).join("")}</div>
-    <p class="note">İnceleme iki katmanlıdır: sabit kural taraması her zaman çalışır ve yapay zekâ kararı bir kural bulgusunu asla temizleyemez. Yapay zekânın gerekçeleri doğrulanmamış yorumdur; paketin yazdığı metinden etkilenmiş olabilir.</p>`;
+    <p class="note">${t("İnceleme iki katmanlıdır: sabit kural taraması her zaman çalışır ve yapay zekâ kararı bir kural bulgusunu asla temizleyemez. Yapay zekânın gerekçeleri doğrulanmamış yorumdur; paketin yazdığı metinden etkilenmiş olabilir.")}</p>`;
 }
 
 function renderPkg(a, reviewing, r) {
-  const [cls, label] = STATUS[a.status] || ["neutral", a.status];
+  const [cls, label] = STATUS()[a.status] || ["neutral", a.status];
   if (a.status === "missing" || a.status === "error") {
     return `<article class="pkg ${a.status}"><div class="pkg-head"><span class="pkg-name">${esc(a.name)}</span>
-      <span class="ver">kurulu <b>${esc(a.installed)}</b></span><span class="badge ${cls}">${label}</span></div>
+      <span class="ver">${t("kurulu")} <b>${esc(a.installed)}</b></span><span class="badge ${cls}">${label}</span></div>
       <div class="pkg-body">${a.error ? `<div class="verdict">${esc(a.error)}</div>` : ""}${renderFindings(a.findings)}</div></article>`;
   }
   const verdict = renderVerdict(a.llm);
-  const holdBadge = a.held ? `<span class="badge neutral" title="${esc(fmtDate(a.hold_until))}">⏳ ${until(a.hold_until)} bekleme</span>` : "";
-  const apprBadge = a.approved ? `<span class="badge accent">✓ Onaylandı</span>` : "";
+  const holdBadge = a.held ? `<span class="badge neutral" title="${esc(fmtDate(a.hold_until))}">⏳ ${t("{left} bekleme", { left: until(a.hold_until) })}</span>` : "";
+  const apprBadge = a.approved ? `<span class="badge accent">✓ ${t("Onaylandı")}</span>` : "";
   const dk = `diff:${keyOf(a)}`;
   const providers = (ui.settings?.providers || []);
   return `<article class="pkg ${a.status}">
     <div class="pkg-head">
       <span class="pkg-name">${esc(a.name)}</span>
-      <span class="ver">${esc(a.installed)} → <b>${esc(a.new_version)}</b>${a.vcs ? " · geliştirme sürümü" : ""}</span>
+      <span class="ver">${esc(a.installed)} → <b>${esc(a.new_version)}</b>${a.vcs ? " · " + t("geliştirme sürümü") : ""}</span>
       <span class="badge ${cls}">${label}</span>${holdBadge}${apprBadge}
       <span class="spacer"></span>
-      <a class="small" href="${esc(a.aur_url)}" target="_blank" rel="noopener">AUR sayfası ↗</a>
+      <a class="small" href="${esc(a.aur_url)}" target="_blank" rel="noopener">${t("AUR sayfası")} ↗</a>
     </div>
     <div class="pkg-body">
       ${verdict}
@@ -283,24 +312,24 @@ function renderPkg(a, reviewing, r) {
       ${renderDeps(a.new_aur_deps, a.name)}
       ${renderSourcesLine(a.sources)}
       <div class="meta-grid">
-        <span>Bakımcı: <b>${esc(a.maintainer || "yok")}</b>${a.known_maintainer && a.known_maintainer !== a.maintainer ? ` (önceden ${esc(a.known_maintainer)})` : ""}</span>
-        <span>Oy: <b>${a.votes ?? "?"}</b></span>
-        <span>AUR'a ilk ekleniş: <b>${fmtDay(a.first_submitted)}</b></span>
-        <span>Bu sürüm: <b>${fmtDate(a.last_modified)}</b></span>
-        <span>Karşılaştırma: <b>${a.diff?.base ? esc(a.diff.base.slice(0, 10)) : "yok"}</b> → <b>${esc(a.target.slice(0, 10))}</b> (${esc(a.base_source)})</span>
+        <span>${t("Bakımcı:")} <b>${esc(a.maintainer || t("yok"))}</b>${a.known_maintainer && a.known_maintainer !== a.maintainer ? ` (${t("önceden {who}", { who: esc(a.known_maintainer) })})` : ""}</span>
+        <span>${t("Oy:")} <b>${a.votes ?? "?"}</b></span>
+        <span>${t("AUR'a ilk ekleniş:")} <b>${fmtDay(a.first_submitted)}</b></span>
+        <span>${t("Bu sürüm:")} <b>${fmtDate(a.last_modified)}</b></span>
+        <span>${t("Karşılaştırma:")} <b>${a.diff?.base ? esc(a.diff.base.slice(0, 10)) : t("yok")}</b> → <b>${esc(a.target.slice(0, 10))}</b> (${esc(a.base_source)})</span>
       </div>
       <div class="pkg-actions">
         ${a.approved
-          ? `<button class="btn sm" data-act="unapprove" data-name="${esc(a.name)}">Onayı kaldır</button>`
+          ? `<button class="btn sm" data-act="unapprove" data-name="${esc(a.name)}">${t("Onayı kaldır")}</button>`
           : `<button class="btn sm ${a.status === "clean" ? "" : "primary"}" data-act="approve" data-name="${esc(a.name)}" data-commit="${esc(a.approval_key || a.target)}" data-status="${a.status}">
-              ${a.status === "clean" && a.held ? "Beklemeden onayla" : a.status === "clean" ? "Onayla" : "İnceledim, onayla"}</button>`}
-        <button class="btn sm ghost" data-act="rereview" data-name="${esc(a.name)}" ${reviewing ? "disabled" : ""}>${reviewing ? "İnceleniyor…" : "Yeniden incelet"}</button>
+              ${a.status === "clean" && a.held ? t("Beklemeden onayla") : a.status === "clean" ? t("Onayla") : t("İnceledim, onayla")}</button>`}
+        <button class="btn sm ghost" data-act="rereview" data-name="${esc(a.name)}" ${reviewing ? "disabled" : ""}>${reviewing ? t("İnceleniyor…") : t("Yeniden incelet")}</button>
         ${providers.length > 1 ? `<select class="input" style="height:28px" data-provider-for="${esc(a.name)}">${providers.map((p) =>
           `<option value="${esc(p.id)}" ${p.id === ui.settings.review.active_provider ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>` : ""}
       </div>
     </div>
     <details class="more" data-key="${esc(dk)}" ${ui.openDetails.has(dk) ? "open" : ""}>
-      <summary>Diff'i ve commit'leri göster (${a.diff.chars.toLocaleString("tr-TR")} karakter${a.diff.truncated ? ", kısaltıldı" : ""})</summary>
+      <summary>${a.diff.truncated ? t("Diff'i ve commit'leri göster ({n} karakter, kısaltıldı)", { n: fmtNum(a.diff.chars) }) : t("Diff'i ve commit'leri göster ({n} karakter)", { n: fmtNum(a.diff.chars) })}</summary>
       <div class="more-body">
         <ul class="commits">${(a.commits || []).map((c) => `<li><code>${esc(c.hash.slice(0, 10))}</code> ${esc(c.subject)} <span class="muted">— ${esc(c.author)} &lt;${esc(c.email)}&gt;, ${fmtDate(c.time)}</span></li>`).join("")}</ul>
         ${ui.openDetails.has(dk) ? renderDiff(a.diff.text) : ""}
@@ -312,32 +341,32 @@ function renderPkg(a, reviewing, r) {
 
 const srcPending = (a) => (a.sources?.sources || []).some((s) => s.status === "deferred");
 const fmtSize = (n) => n == null ? "?" : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
-const SRC_STATUS = {
-  ok: "incelendi", "in-repo": "AUR deposunda (diff'te)", vcs: "git/svn deposu, önceden incelenemez",
-  deferred: "iniyor, sonraki kontrolde", "too-large": "boyut sınırını aşıyor", "download-failed": "indirilemedi",
-  unsupported: "desteklenmeyen adres", skipped: "atlandı",
-};
-const CAT_TR = { persist: "kalıcılık", system: "sistem", "deb-script": "deb betiği", build: "derleme", script: "betik", text: "metin" };
+const SRC_STATUS = () => ({
+  ok: t("incelendi"), "in-repo": t("AUR deposunda (diff'te)"), vcs: t("git/svn deposu, önceden incelenemez"),
+  deferred: t("iniyor, sonraki kontrolde"), "too-large": t("boyut sınırını aşıyor"), "download-failed": t("indirilemedi"),
+  unsupported: t("desteklenmeyen adres"), skipped: t("atlandı"),
+});
+const CAT_TR = () => ({ persist: t("kalıcılık"), system: t("sistem"), "deb-script": t("deb betiği"), build: t("derleme"), script: t("betik"), text: t("metin") });
 
 function renderSourcesLine(src) {
   if (!src) return "";
-  if (src.error) return `<div class="srcline muted small">Kaynak dosyalar incelenemedi: ${esc(src.error)}</div>`;
+  if (src.error) return `<div class="srcline muted small">${t("Kaynak dosyalar incelenemedi: {msg}", { msg: esc(src.error) })}</div>`;
   const remote = (src.sources || []).filter((s) => !["in-repo"].includes(s.status));
-  if (!remote.length) return `<div class="srcline muted small">İndirilecek dış kaynak yok; paketin tüm dosyaları yukarıdaki diff'te.</div>`;
+  if (!remote.length) return `<div class="srcline muted small">${t("İndirilecek dış kaynak yok; paketin tüm dosyaları yukarıdaki diff'te.")}</div>`;
   const ok = remote.filter((s) => s.status === "ok");
   const bad = remote.filter((s) => s.verified === false).length;
-  const parts = [`${ok.length}/${remote.length} kaynak dosya indirilip incelendi`];
-  if (ok.length) parts.push(bad ? `<b class="warn-text">${bad} dosyanın sağlama toplamı tutmuyor</b>` : ok.every((s) => s.verified) ? "sağlama toplamları doğrulandı" : "bazı dosyaların sabitlenmiş sağlama toplamı yok");
+  const parts = [t("{ok}/{all} kaynak dosya indirilip incelendi", { ok: ok.length, all: remote.length })];
+  if (ok.length) parts.push(bad ? `<b class="warn-text">${t("{n} dosyanın sağlama toplamı tutmuyor", { n: bad })}</b>` : ok.every((s) => s.verified) ? t("sağlama toplamları doğrulandı") : t("bazı dosyaların sabitlenmiş sağlama toplamı yok"));
   const sm = src.summaries || [];
   if (sm.some((x) => x.baseline)) {
-    const t = sm.reduce((acc, x) => ({ a: acc.a + (x.added || 0), r: acc.r + (x.removed || 0), c: acc.c + (x.changed || 0) }), { a: 0, r: 0, c: 0 });
-    parts.push(`kurulu sürüme göre ${t.a} dosya eklendi, ${t.r} silindi, ${t.c} değişti`);
-  } else if (ok.length) parts.push("karşılaştırılacak eski sürüm yok, yalnızca içerik tarandı");
-  for (const t of src.tag_compare || []) {
-    if (t.status === "ok") parts.push(t.modified.length || t.only_tar.length
-      ? `<b class="warn-text">sürüm arşivi git etiketinden farklı (${t.modified.length} değişik, ${t.only_tar.length} fazla dosya)</b>`
-      : `sürüm arşivi git etiketiyle (${esc(t.tag)}) uyumlu`);
-    else if (t.status === "git-archive") parts.push("arşiv doğrudan git'ten üretilmiş");
+    const tot = sm.reduce((acc, x) => ({ a: acc.a + (x.added || 0), r: acc.r + (x.removed || 0), c: acc.c + (x.changed || 0) }), { a: 0, r: 0, c: 0 });
+    parts.push(t("kurulu sürüme göre {a} dosya eklendi, {r} silindi, {c} değişti", tot));
+  } else if (ok.length) parts.push(t("karşılaştırılacak eski sürüm yok, yalnızca içerik tarandı"));
+  for (const tc of src.tag_compare || []) {
+    if (tc.status === "ok") parts.push(tc.modified.length || tc.only_tar.length
+      ? `<b class="warn-text">${t("sürüm arşivi git etiketinden farklı ({m} değişik, {o} fazla dosya)", { m: tc.modified.length, o: tc.only_tar.length })}</b>`
+      : t("sürüm arşivi git etiketiyle ({tag}) uyumlu", { tag: esc(tc.tag) }));
+    else if (tc.status === "git-archive") parts.push(t("arşiv doğrudan git'ten üretilmiş"));
   }
   return `<div class="srcline small">📦 ${parts.join(" · ")}</div>`;
 }
@@ -345,69 +374,72 @@ function renderSourcesLine(src) {
 function renderSources(src, dk) {
   if (!src || !(src.sources || []).some((s) => s.status !== "in-repo")) return "";
   const open = ui.openDetails.has(dk);
+  const SS = SRC_STATUS();
+  const CT = CAT_TR();
   const rows = src.sources.filter((s) => s.status !== "in-repo").map((s) => {
     const sm = (src.summaries || []).find((x) => x.file === s.file);
-    const ver = s.verified === true ? `<span class="badge ok">✓ sağlama toplamı</span>` : s.verified === false ? `<span class="badge danger">sağlama toplamı tutmuyor</span>` : s.status === "ok" ? `<span class="badge neutral">sağlama toplamı yok (SKIP)</span>` : "";
+    const ver = s.verified === true ? `<span class="badge ok">✓ ${t("sağlama toplamı")}</span>` : s.verified === false ? `<span class="badge danger">${t("sağlama toplamı tutmuyor")}</span>` : s.status === "ok" ? `<span class="badge neutral">${t("sağlama toplamı yok (SKIP)")}</span>` : "";
     let detail = "";
     if (sm) {
-      detail = `<div class="muted small">${esc(sm.format)} · ${fmtSize(sm.size)} · ${sm.members} dosya · ${sm.elf} derlenmiş ikili${sm.root ? ` · kök: ${esc(sm.root)}` : ""}</div>`;
+      detail = `<div class="muted small">${esc(sm.format)} · ${fmtSize(sm.size)} · ${t("{n} dosya", { n: sm.members })} · ${t("{n} derlenmiş ikili", { n: sm.elf })}${sm.root ? ` · ${t("kök:")} ${esc(sm.root)}` : ""}</div>`;
       if (sm.baseline) {
-        detail += `<div class="small">Kurulu sürümdeki <code>${esc(sm.old_file)}</code> (${fmtSize(sm.old_size)}) ile: <b>${sm.added}</b> eklendi, <b>${sm.removed}</b> silindi, <b>${sm.changed}</b> değişti${sm.size_only ? " <span class='muted'>(bu biçimde yalnızca boyutlar karşılaştırılabildi)</span>" : ""}</div>`;
+        detail += `<div class="small">${t("Kurulu sürümdeki {file} ({size}) ile: {a} eklendi, {r} silindi, {c} değişti",
+          { file: `<code>${esc(sm.old_file)}</code>`, size: fmtSize(sm.old_size), a: `<b>${sm.added}</b>`, r: `<b>${sm.removed}</b>`, c: `<b>${sm.changed}</b>` })}${sm.size_only ? ` <span class='muted'>${t("(bu biçimde yalnızca boyutlar karşılaştırılabildi)")}</span>` : ""}</div>`;
         const list = (label, arr) => arr.length ? `<div class="small"><span class="muted">${label}:</span> ${arr.map((p) => `<code>${esc(p)}</code>`).join(" ")}</div>` : "";
-        detail += list("Eklenenler", sm.added_list) + list("Değişenler", sm.changed_list) + list("Silinenler", sm.removed_list);
+        detail += list(t("Eklenenler"), sm.added_list) + list(t("Değişenler"), sm.changed_list) + list(t("Silinenler"), sm.removed_list);
       } else {
-        detail += `<div class="small muted">Kurulu sürümün kaynağı karşılaştırma için elde yok; içerik yalnızca tarandı.</div>`;
+        detail += `<div class="small muted">${t("Kurulu sürümün kaynağı karşılaştırma için elde yok; içerik yalnızca tarandı.")}</div>`;
       }
-      if (sm.notable.length) detail += `<div class="small"><span class="muted">Sisteme yerleşen dosyalar:</span> ${sm.notable.map((n) => `<code>${esc(n.path)}</code> <span class="muted">(${CAT_TR[n.cat] || n.cat})</span>`).join(" ")}</div>`;
-      if (open && sm.diffs.length) detail += sm.diffs.map((d) => `<div class="small"><b>${esc(d.path)}</b> <span class="muted">(${CAT_TR[d.cat] || d.cat || "metin"})</span></div>${renderDiff(d.diff)}`).join("");
+      if (sm.notable.length) detail += `<div class="small"><span class="muted">${t("Sisteme yerleşen dosyalar:")}</span> ${sm.notable.map((n) => `<code>${esc(n.path)}</code> <span class="muted">(${CT[n.cat] || n.cat})</span>`).join(" ")}</div>`;
+      if (open && sm.diffs.length) detail += sm.diffs.map((d) => `<div class="small"><b>${esc(d.path)}</b> <span class="muted">(${CT[d.cat] || d.cat || t("metin")})</span></div>${renderDiff(d.diff)}`).join("");
     }
-    const tc = (src.tag_compare || []).find((t) => t.file === s.file);
+    const tc = (src.tag_compare || []).find((x) => x.file === s.file);
     if (tc) {
-      const TC = { "git-archive": "Arşiv, git deposundan doğrudan üretilmiş; git etiketiyle aynı içerik.",
-        "no-repo": "Kaynağın git deposu bilinmiyor; git etiketiyle karşılaştırılamadı.",
-        "no-tag": `Git deposunda (${esc(tc.repo || "")}) bu sürüme uyan etiket bulunamadı.`,
-        deferred: "Git etiketiyle karşılaştırma sonraki kontrolde tamamlanacak.",
-        failed: `Git etiketiyle karşılaştırılamadı: ${esc(tc.error || "")}` };
+      const TC = { "git-archive": t("Arşiv, git deposundan doğrudan üretilmiş; git etiketiyle aynı içerik."),
+        "no-repo": t("Kaynağın git deposu bilinmiyor; git etiketiyle karşılaştırılamadı."),
+        "no-tag": t("Git deposunda ({repo}) bu sürüme uyan etiket bulunamadı.", { repo: esc(tc.repo || "") }),
+        deferred: t("Git etiketiyle karşılaştırma sonraki kontrolde tamamlanacak."),
+        failed: t("Git etiketiyle karşılaştırılamadı: {msg}", { msg: esc(tc.error || "") }) };
       if (tc.status === "ok") {
         const list = (label, arr) => arr.length ? `<div class="small"><span class="muted">${label}:</span> ${arr.slice(0, 40).map((p) => `<code>${esc(p)}</code>`).join(" ")}${arr.length > 40 ? " …" : ""}</div>` : "";
-        detail += `<div class="small"><b>Git etiketiyle karşılaştırma</b> (<a href="${esc(tc.repo)}" target="_blank" rel="noopener">${esc(tc.repo)}</a> @ <code>${esc(tc.tag)}</code>): ${tc.modified.length} dosya git'tekinden farklı, ${tc.only_tar.length} beklenmeyen dosya yalnızca arşivde, ${tc.only_tar_expected.length} dosya autotools/gettext çıktısı olarak yalnızca arşivde (normal).</div>`
-          + list("Git'tekinden farklı", tc.modified) + list("Yalnızca arşivde", tc.only_tar)
-          + (open ? `<details class="small"><summary class="muted">Autotools/gettext çıktısı olarak yalnızca arşivde olanlar (${tc.only_tar_expected.length})</summary>${tc.only_tar_expected.map((p) => `<code>${esc(p)}</code>`).join(" ")}</details>` : "")
-          + (open ? tc.diffs.map((d) => `<div class="small"><b>${esc(d.path)}</b> <span class="muted">(git → sürüm arşivi)</span></div>${renderDiff(d.diff)}`).join("") : "");
+        detail += `<div class="small"><b>${t("Git etiketiyle karşılaştırma")}</b> (<a href="${esc(tc.repo)}" target="_blank" rel="noopener">${esc(tc.repo)}</a> @ <code>${esc(tc.tag)}</code>): ${t("{m} dosya git'tekinden farklı, {o} beklenmeyen dosya yalnızca arşivde, {e} dosya autotools/gettext çıktısı olarak yalnızca arşivde (normal).", { m: tc.modified.length, o: tc.only_tar.length, e: tc.only_tar_expected.length })}</div>`
+          + list(t("Git'tekinden farklı"), tc.modified) + list(t("Yalnızca arşivde"), tc.only_tar)
+          + (open ? `<details class="small"><summary class="muted">${t("Autotools/gettext çıktısı olarak yalnızca arşivde olanlar ({n})", { n: tc.only_tar_expected.length })}</summary>${tc.only_tar_expected.map((p) => `<code>${esc(p)}</code>`).join(" ")}</details>` : "")
+          + (open ? tc.diffs.map((d) => `<div class="small"><b>${esc(d.path)}</b> <span class="muted">(${t("git → sürüm arşivi")})</span></div>${renderDiff(d.diff)}`).join("") : "");
       } else detail += `<div class="small muted">${TC[tc.status] || tc.status}</div>`;
     }
-    return `<div class="srcfile"><div><b>${esc(s.file)}</b> <span class="muted small">${esc(SRC_STATUS[s.status] || s.status)}${s.error ? `: ${esc(s.error)}` : ""}</span> ${ver}</div>
+    return `<div class="srcfile"><div><b>${esc(s.file)}</b> <span class="muted small">${esc(SS[s.status] || s.status)}${s.error ? `: ${esc(s.error)}` : ""}</span> ${ver}</div>
       <div class="muted small url">${esc(s.url)}</div>${detail}</div>`;
   }).join("");
   return `<details class="more" data-key="${esc(dk)}" ${open ? "open" : ""}>
-    <summary>Kaynak dosyaların içini göster</summary>
+    <summary>${t("Kaynak dosyaların içini göster")}</summary>
     <div class="more-body">
-      <p class="help" style="margin:0">Yeni sürümün indirdiği dosyalar, kurulmadan önce hiçbir şey çalıştırılmadan açılıp incelendi. Sağlama toplamı doğrulanan dosyalar saklanır ve güncellemede yay'a verilir; ikinci kez indirilmez.</p>
+      <p class="help" style="margin:0">${t("Yeni sürümün indirdiği dosyalar, kurulmadan önce hiçbir şey çalıştırılmadan açılıp incelendi. Sağlama toplamı doğrulanan dosyalar saklanır ve güncellemede yay'a verilir; ikinci kez indirilmez.")}</p>
       ${rows}
     </div>
   </details>`;
 }
 
 function renderVerdict(llm) {
-  if (!llm) return `<div class="verdict">Yapay zekâ incelemesi kapalı. Diff'e kendin bakıp karar ver.</div>`;
-  if (llm.status !== "ok") return `<div class="verdict"><b>İnceleme yapılamadı:</b> ${esc(llm.error)}<div class="who">Bu paket incelenmemiş sayılır ve onayın olmadan kurulmaz.</div></div>`;
-  const vmap = { clean: ["ok", "Temiz"], suspicious: ["warn", "Şüpheli"], malicious: ["danger", "Zararlı"] };
+  if (!llm) return `<div class="verdict">${t("Yapay zekâ incelemesi kapalı. Diff'e kendin bakıp karar ver.")}</div>`;
+  if (llm.status !== "ok") return `<div class="verdict"><b>${t("İnceleme yapılamadı:")}</b> ${esc(llm.error)}<div class="who">${t("Bu paket incelenmemiş sayılır ve onayın olmadan kurulmaz.")}</div></div>`;
+  const vmap = { clean: ["ok", t("Temiz")], suspicious: ["warn", t("Şüpheli")], malicious: ["danger", t("Zararlı")] };
   const [vc, vl] = vmap[llm.verdict];
   const cost = llm.usage?.cost_usd != null ? ` · $${llm.usage.cost_usd.toFixed(3)}` : llm.usage?.input_tokens ? ` · ${llm.usage.input_tokens + llm.usage.output_tokens} token` : "";
-  return `<div class="verdict"><span class="badge ${vc}">Yapay zekâ: ${vl}</span> ${esc(llm.summary)}
+  return `<div class="verdict"><span class="badge ${vc}">${t("Yapay zekâ: {v}", { v: vl })}</span> ${esc(llm.summary)}
     ${llm.findings?.length ? `<ul class="findings" style="margin-top:8px">${llm.findings.map((f) => findingRow(f.severity, f.explanation, f.file, f.excerpt)).join("")}</ul>` : ""}
-    <div class="who">${esc(llm.provider)} · ${esc(llm.model || "")} · ${llm.seconds ?? "?"} sn${cost} · ${fmtDate(llm.at)} · doğrulanmamış yorum</div></div>`;
+    <div class="who">${esc(llm.provider)} · ${esc(llm.model || "")} · ${t("{n} sn", { n: llm.seconds ?? "?" })}${cost} · ${fmtDate(llm.at)} · ${t("doğrulanmamış yorum")}</div></div>`;
 }
 
 function renderDeps(list, parent) {
   if (!list || !list.length) return "";
-  return `<div class="deps"><h3>Bu güncellemenin getirdiği yeni AUR bağımlılıkları</h3>
-    <p class="help">Bunlar henüz kurulu değil; yay ana paketi kurarken bunları da derleyip kurar. Ana paketin onayı bu bağımlılıkların incelenen commit'lerini de kapsar.</p>
+  return `<div class="deps"><h3>${t("Bu güncellemenin getirdiği yeni AUR bağımlılıkları")}</h3>
+    <p class="help">${t("Bunlar henüz kurulu değil; yay ana paketi kurarken bunları da derleyip kurar. Ana paketin onayı bu bağımlılıkların incelenen commit'lerini de kapsar.")}</p>
     ${list.map((d) => renderDep(d, parent)).join("")}</div>`;
 }
 
 function renderDep(d, parent) {
-  const [cls, label] = STATUS[d.status] || ["neutral", d.status];
+  const [cls, label] = STATUS()[d.status] || ["neutral", d.status];
   if (!d.target) {
     return `<div class="dep ${d.status}"><div class="pkg-head"><span class="pkg-name">${esc(d.name)}</span><span class="badge ${cls}">${label}</span></div>
       <div class="verdict">${esc(d.error || "")}</div></div>`;
@@ -415,19 +447,19 @@ function renderDep(d, parent) {
   const dk = `dep:${parent}:${d.name}@${d.target}`;
   return `<div class="dep ${d.status}">
     <div class="pkg-head">
-      <span class="pkg-name">${esc(d.name)}</span><span class="ver">yeni · <b>${esc(d.version)}</b> · ${esc(d.required_by)} tarafından isteniyor</span>
+      <span class="pkg-name">${esc(d.name)}</span><span class="ver">${t("yeni · {ver} · {by} tarafından isteniyor", { ver: `<b>${esc(d.version)}</b>`, by: esc(d.required_by) })}</span>
       <span class="badge ${cls}">${label}</span><span class="spacer"></span>
-      <a class="small" href="${esc(d.aur_url)}" target="_blank" rel="noopener">AUR sayfası ↗</a>
+      <a class="small" href="${esc(d.aur_url)}" target="_blank" rel="noopener">${t("AUR sayfası")} ↗</a>
     </div>
     ${renderVerdict(d.llm)}
     ${renderFindings(d.findings)}
     <div class="meta-grid">
-      <span>Bakımcı: <b>${esc(d.maintainer || "yok")}</b></span><span>Oy: <b>${d.votes ?? "?"}</b></span>
-      <span>AUR'a ilk ekleniş: <b>${fmtDay(d.first_submitted)}</b></span><span>Bu sürüm: <b>${fmtDate(d.last_modified)}</b></span>
-      ${d.repo_deps?.length ? `<span>Resmi depodan da kurulacak: <b>${d.repo_deps.map(esc).join(", ")}</b></span>` : ""}
+      <span>${t("Bakımcı:")} <b>${esc(d.maintainer || t("yok"))}</b></span><span>${t("Oy:")} <b>${d.votes ?? "?"}</b></span>
+      <span>${t("AUR'a ilk ekleniş:")} <b>${fmtDay(d.first_submitted)}</b></span><span>${t("Bu sürüm:")} <b>${fmtDate(d.last_modified)}</b></span>
+      ${d.repo_deps?.length ? `<span>${t("Resmi depodan da kurulacak:")} <b>${d.repo_deps.map(esc).join(", ")}</b></span>` : ""}
     </div>
     <details class="more" data-key="${esc(dk)}" ${ui.openDetails.has(dk) ? "open" : ""}>
-      <summary>Paketin tamamını göster (${d.diff.chars.toLocaleString("tr-TR")} karakter)</summary>
+      <summary>${t("Paketin tamamını göster ({n} karakter)", { n: fmtNum(d.diff.chars) })}</summary>
       <div class="more-body">${ui.openDetails.has(dk) ? renderDiff(d.diff.text) : ""}</div>
     </details>
     ${renderSourcesLine(d.sources)}
@@ -442,7 +474,7 @@ function renderFindings(findings) {
   return `<ul class="findings">${list.map((f) => findingRow(f.severity, f.title + (f.detail ? `: ${f.detail}` : ""), f.file, f.line)).join("")}</ul>`;
 }
 function findingRow(sev, text, file, line) {
-  const [cls, label] = SEV[sev] || ["neutral", sev];
+  const [cls, label] = SEV()[sev] || ["neutral", sev];
   return `<li class="finding"><span class="badge ${cls}">${label}</span><div>${esc(text)}${file ? ` <span class="muted">(${esc(file)})</span>` : ""}${line ? `<code class="line">${esc(line)}</code>` : ""}</div></li>`;
 }
 
@@ -460,24 +492,24 @@ function renderDiff(text) {
 }
 
 function renderRepo(r) {
-  if (!r.repo.length) return `<div class="empty">Resmi depolarda bekleyen güncelleme yok.</div>`;
+  if (!r.repo.length) return `<div class="empty">${t("Resmi depolarda bekleyen güncelleme yok.")}</div>`;
   const f = ui.repoFilter.toLowerCase();
   const rows = [...r.repo]
     .sort((a, b) => (b.important - a.important) || (b.fixes_cve - a.fixes_cve) || a.name.localeCompare(b.name))
     .filter((x) => !f || x.name.includes(f));
-  return `<div class="toolbar"><input class="input" id="repo-filter" placeholder="Paket ara…" value="${esc(ui.repoFilter)}" style="width:240px">
-      <span class="muted small">${rows.length} / ${r.repo.length} paket · Resmi paketler Arch geliştiricileri tarafından imzalanır ve pacman imzayı doğrular.</span></div>
-    <div class="table-wrap"><table><thead><tr><th>Paket</th><th>Depo</th><th>Kurulu</th><th>Yeni</th><th>Not</th></tr></thead><tbody>
+  return `<div class="toolbar"><input class="input" id="repo-filter" placeholder="${esc(t("Paket ara…"))}" value="${esc(ui.repoFilter)}" style="width:240px">
+      <span class="muted small">${t("{shown} / {all} paket · Resmi paketler Arch geliştiricileri tarafından imzalanır ve pacman imzayı doğrular.", { shown: rows.length, all: r.repo.length })}</span></div>
+    <div class="table-wrap"><table><thead><tr><th>${t("Paket")}</th><th>${t("Depo")}</th><th>${t("Kurulu")}</th><th>${t("Yeni")}</th><th>${t("Not")}</th></tr></thead><tbody>
     ${rows.map((x) => `<tr><td><b>${esc(x.name)}</b></td><td class="muted">${esc(x.repo)}</td><td class="mono">${esc(x.old)}</td><td class="mono">${esc(x.new)}</td>
-      <td><div class="tags">${x.fixes_cve ? `<span class="badge ok">güvenlik düzeltmesi</span>` : ""}${x.important ? `<span class="badge accent">önemli</span>` : ""}${x.major ? `<span class="badge warn">ana sürüm</span>` : ""}${x.reboot ? `<span class="badge neutral">yeniden başlatma</span>` : ""}</div></td></tr>`).join("")}
+      <td><div class="tags">${x.fixes_cve ? `<span class="badge ok">${t("güvenlik düzeltmesi")}</span>` : ""}${x.important ? `<span class="badge accent">${t("önemli")}</span>` : ""}${x.major ? `<span class="badge warn">${t("ana sürüm")}</span>` : ""}${x.reboot ? `<span class="badge neutral">${t("yeniden başlatma")}</span>` : ""}</div></td></tr>`).join("")}
     </tbody></table></div>`;
 }
 
 function renderVulns(r) {
   const lists = r.incident_lists || [];
   const inc = r.incidents || [];
-  const listNote = lists.length ? `<div class="srcline small" style="margin-bottom:12px">🛡 Bilinen saldırı listeleri: ${lists.map((l) => `${esc(l.name)} (${l.count} paket)`).join(", ")} — ${inc.length ? `<b class="warn-text">${inc.length} eşleşme, yukarıdaki uyarılara bak</b>` : "bu bilgisayarda kurulmuş ya da kurulu hiçbir paket listede yok; sudo/ssh'yi gölgeleyen sahte komut da yok"}.</div>` : "";
-  if (!r.vulns.length) return listNote + `<div class="empty">Kurulu sürümleri etkileyen kayıtlı bir güvenlik açığı yok.</div>`;
+  const listNote = lists.length ? `<div class="srcline small" style="margin-bottom:12px">🛡 ${t("Bilinen saldırı listeleri:")} ${lists.map((l) => `${esc(l.name)} (${t("{n} paket", { n: l.count })})`).join(", ")} — ${inc.length ? `<b class="warn-text">${t("{n} eşleşme, yukarıdaki uyarılara bak", { n: inc.length })}</b>` : t("bu bilgisayarda kurulmuş ya da kurulu hiçbir paket listede yok; sudo/ssh'yi gölgeleyen sahte komut da yok")}.</div>` : "";
+  if (!r.vulns.length) return listNote + `<div class="empty">${t("Kurulu sürümleri etkileyen kayıtlı bir güvenlik açığı yok.")}</div>`;
   const groups = { active: [], fixed: [], stale: [], acked: [] };
   for (const v of r.vulns) groups[vulnGroup(v)].push(v);
   const analyzing = new Set(ui.data.analyzing || []);
@@ -488,14 +520,14 @@ function renderVulns(r) {
       <div class="more-body">${intro ? `<p class="note" style="margin:0">${intro}</p>` : ""}${list.map((v) => renderVuln(v, key, analyzing)).join("")}</div>
     </details>`;
   return listNote + `<div class="toolbar">
-      <button class="btn sm" data-act="analyze-all" ${pendingAi && !analyzing.size ? "" : "disabled"}>${analyzing.size ? `Analiz ediliyor… (${analyzing.size})` : `Yapay zekâya değerlendirt (${pendingAi})`}</button>
-      <span class="muted small">${r.cve_pending ? `${r.cve_pending} CVE'nin ayrıntısı NVD'den sonraki kontrollerde gelecek. ` : ""}Kayıtlar: Arch güvenlik takipçisi; CVE ayrıntıları: NVD.</span>
+      <button class="btn sm" data-act="analyze-all" ${pendingAi && !analyzing.size ? "" : "disabled"}>${analyzing.size ? t("Analiz ediliyor… ({n})", { n: analyzing.size }) : t("Yapay zekâya değerlendirt ({n})", { n: pendingAi })}</button>
+      <span class="muted small">${r.cve_pending ? t("{n} CVE'nin ayrıntısı NVD'den sonraki kontrollerde gelecek.", { n: r.cve_pending }) + " " : ""}${t("Kayıtlar: Arch güvenlik takipçisi; CVE ayrıntıları: NVD.")}</span>
     </div>
-    ${groups.active.length ? "" : `<div class="empty" style="padding:12px">Etkin bir güvenlik açığı yok.</div>`}
-    ${section("active", "Etkin açıklar", "Önem derecesine, çalışan bir servisin paketi yüklemesine (⚙) ve düzeltmenin bekleyen güncellemede olmasına göre sıralı.", groups.active)}
-    ${section("fixed", "Düzeltildiği doğrulananlar", "NVD sürüm verisine ya da CVE açıklamasına göre kurulu upstream sürüm düzeltmeyi içeriyor; takipçi kaydı güncellenmemiş.", groups.fixed)}
-    ${section("stale", "Büyük olasılıkla eski kayıtlar", "Takipçi düzeltme sürümünü girmemiş, CVE'ler önceki yıllara ait ve kurulu upstream sürüm açığın bildirildiği sürümden yeni. Bu bir tahmindir; yapay zekâ değerlendirmesiyle teyit edebilirsin.", groups.stale)}
-    ${section("acked", "İncelediğin ve gizlediğin kayıtlar", "Paket sürümü değişince yeniden görünürler.", groups.acked)}`;
+    ${groups.active.length ? "" : `<div class="empty" style="padding:12px">${t("Etkin bir güvenlik açığı yok.")}</div>`}
+    ${section("active", t("Etkin açıklar"), t("Önem derecesine, çalışan bir servisin paketi yüklemesine (⚙) ve düzeltmenin bekleyen güncellemede olmasına göre sıralı."), groups.active)}
+    ${section("fixed", t("Düzeltildiği doğrulananlar"), t("NVD sürüm verisine ya da CVE açıklamasına göre kurulu upstream sürüm düzeltmeyi içeriyor; takipçi kaydı güncellenmemiş."), groups.fixed)}
+    ${section("stale", t("Büyük olasılıkla eski kayıtlar"), t("Takipçi düzeltme sürümünü girmemiş, CVE'ler önceki yıllara ait ve kurulu upstream sürüm açığın bildirildiği sürümden yeni. Bu bir tahmindir; yapay zekâ değerlendirmesiyle teyit edebilirsin."), groups.stale)}
+    ${section("acked", t("İncelediğin ve gizlediğin kayıtlar"), t("Paket sürümü değişince yeniden görünürler."), groups.acked)}`;
 }
 
 function vulnGroup(v) {
@@ -505,10 +537,10 @@ function vulnGroup(v) {
   return "active";
 }
 
-const AV_TR = { NETWORK: "ağdan", ADJACENT_NETWORK: "yerel ağdan", ADJACENT: "yerel ağdan", LOCAL: "yerel", PHYSICAL: "fiziksel erişimle" };
-const ASSESS = { affected: ["danger", "Etkileniyor"], fixed: ["ok", "Düzeltilmiş"], not_applicable: ["ok", "Bu sistemi etkilemiyor"], unknown: ["neutral", "Belirsiz"] };
-const RISK_TR = { critical: ["danger", "kritik risk"], high: ["danger", "yüksek risk"], medium: ["warn", "orta risk"], low: ["info", "düşük risk"], none: ["ok", "risk yok"] };
-const CONF_TR = { high: "yüksek güven", medium: "orta güven", low: "düşük güven" };
+const AV_TR = () => ({ NETWORK: t("ağdan"), ADJACENT_NETWORK: t("yerel ağdan"), ADJACENT: t("yerel ağdan"), LOCAL: t("yerel"), PHYSICAL: t("fiziksel erişimle") });
+const ASSESS = () => ({ affected: ["danger", t("Etkileniyor")], fixed: ["ok", t("Düzeltilmiş")], not_applicable: ["ok", t("Bu sistemi etkilemiyor")], unknown: ["neutral", t("Belirsiz")] });
+const RISK_TR = () => ({ critical: ["danger", t("kritik risk")], high: ["danger", t("yüksek risk")], medium: ["warn", t("orta risk")], low: ["info", t("düşük risk")], none: ["ok", t("risk yok")] });
+const CONF_TR = () => ({ high: t("yüksek güven"), medium: t("orta güven"), low: t("düşük güven") });
 
 function renderVuln(v, group, analyzing) {
   const sevCls = group === "active" ? AVG_SEV[v.severity] || "neutral" : "neutral";
@@ -516,21 +548,22 @@ function renderVuln(v, group, analyzing) {
   const busy = analyzing.has(key);
   const ai = v.ai;
   const ev = v.evidence_verdict;
-  const fixBadge = v.fix_pending ? `<span class="badge ok">düzeltme güncellemede: ${esc(v.fixed)}</span>`
-    : ev === "fixed" ? `<span class="badge ok">kurulu sürümde düzeltilmiş (kanıtlı)</span>`
-    : ev === "open" ? `<span class="badge danger">kurulu sürüm etkileniyor (kanıtlı)</span>`
-    : v.fixed ? `<span class="badge neutral">düzeltme: ${esc(v.fixed)}</span>` : "";
-  const aiBadge = ai?.status === "ok" ? `<span class="badge ${ASSESS[ai.assessment][0]}">Yapay zekâ: ${ASSESS[ai.assessment][1]}</span>` : "";
+  const AS = ASSESS();
+  const fixBadge = v.fix_pending ? `<span class="badge ok">${t("düzeltme güncellemede: {v}", { v: esc(v.fixed) })}</span>`
+    : ev === "fixed" ? `<span class="badge ok">${t("kurulu sürümde düzeltilmiş (kanıtlı)")}</span>`
+    : ev === "open" ? `<span class="badge danger">${t("kurulu sürüm etkileniyor (kanıtlı)")}</span>`
+    : v.fixed ? `<span class="badge neutral">${t("düzeltme: {v}", { v: esc(v.fixed) })}</span>` : "";
+  const aiBadge = ai?.status === "ok" ? `<span class="badge ${AS[ai.assessment][0]}">${t("Yapay zekâ: {v}", { v: AS[ai.assessment][1] })}</span>` : "";
   const users = [
-    v.services?.length ? `<span class="tags">${v.services.map((s) => `<span class="badge warn" title="Çalışan bir sistem servisi bu paketi yüklüyor">⚙ ${esc(s.replace(/\.service$/, ""))}</span>`).join("")}</span>` : "",
-    v.explicit ? `<span>senin kurduğun paket</span>` : "",
-    v.used_by?.length ? `<span title="${esc(v.used_by.join(", "))}">kullanan: ${v.used_by.slice(0, 6).map(esc).join(", ")}${v.used_by.length > 6 ? ` +${v.used_by.length - 6}` : ""}</span>` : "",
+    v.services?.length ? `<span class="tags">${v.services.map((s) => `<span class="badge warn" title="${esc(t("Çalışan bir sistem servisi bu paketi yüklüyor"))}">⚙ ${esc(s.replace(/\.service$/, ""))}</span>`).join("")}</span>` : "",
+    v.explicit ? `<span>${t("senin kurduğun paket")}</span>` : "",
+    v.used_by?.length ? `<span title="${esc(v.used_by.join(", "))}">${t("kullanan:")} ${v.used_by.slice(0, 6).map(esc).join(", ")}${v.used_by.length > 6 ? ` +${v.used_by.length - 6}` : ""}</span>` : "",
   ].filter(Boolean).join(" · ");
   const dk = `vuln:${key}`;
   const providers = ui.settings?.providers || [];
   return `<article class="pkg vuln">
     <div class="pkg-head">
-      <span class="badge ${sevCls}">${AVG_SEV_TR[v.severity] || esc(v.severity)}</span>
+      <span class="badge ${sevCls}">${AVG_SEV_TR()[v.severity] || esc(v.severity)}</span>
       <span class="pkg-name">${esc(v.package)}</span><span class="ver">${esc(v.installed)}</span>
       ${fixBadge}${aiBadge}
       <span class="spacer"></span>
@@ -540,81 +573,84 @@ function renderVuln(v, group, analyzing) {
       <div class="meta-grid"><span>${esc(v.type)}</span><span>${v.issues.map(esc).join(", ")}</span>${users ? `<span>${users}</span>` : ""}</div>
       ${renderVulnAi(ai)}
       <div class="pkg-actions">
-        <button class="btn sm ${ai?.status === "ok" ? "ghost" : ""}" data-act="analyze" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}" ${busy ? "disabled" : ""}>${busy ? "Analiz ediliyor…" : ai?.status === "ok" ? "Yeniden değerlendirt" : "Yapay zekâya değerlendirt"}</button>
+        <button class="btn sm ${ai?.status === "ok" ? "ghost" : ""}" data-act="analyze" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}" ${busy ? "disabled" : ""}>${busy ? t("Analiz ediliyor…") : ai?.status === "ok" ? t("Yeniden değerlendirt") : t("Yapay zekâya değerlendirt")}</button>
         ${providers.length > 1 ? `<select class="input" style="height:28px" data-vprovider-for="${esc(key)}">${providers.map((p) => `<option value="${esc(p.id)}" ${p.id === ui.settings.review.active_provider ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>` : ""}
         ${group === "acked"
-          ? `<button class="btn sm ghost" data-act="unack" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}">Geri al</button><span class="small muted">${v.ack.note ? "Not: " + esc(v.ack.note) : ""}</span>`
-          : `<button class="btn sm ghost" data-act="ack" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}">İnceledim, gizle</button>`}
+          ? `<button class="btn sm ghost" data-act="unack" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}">${t("Geri al")}</button><span class="small muted">${v.ack.note ? t("Not:") + " " + esc(v.ack.note) : ""}</span>`
+          : `<button class="btn sm ghost" data-act="ack" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}">${t("İnceledim, gizle")}</button>`}
       </div>
     </div>
     <details class="more" data-key="${esc(dk)}" ${ui.openDetails.has(dk) ? "open" : ""}>
-      <summary>CVE ayrıntıları (${v.cves?.length || v.issue_count})</summary>
-      <div class="more-body">${(v.cves || []).map(renderCve).join("") || `<p class="muted">Ayrıntı yok.</p>`}</div>
+      <summary>${t("CVE ayrıntıları ({n})", { n: v.cves?.length || v.issue_count })}</summary>
+      <div class="more-body">${(v.cves || []).map(renderCve).join("") || `<p class="muted">${t("Ayrıntı yok.")}</p>`}</div>
     </details>
   </article>`;
 }
 
 function renderVulnAi(ai) {
   if (!ai) return "";
-  if (ai.status !== "ok") return `<div class="verdict"><b>Değerlendirme yapılamadı:</b> ${esc(ai.error)}</div>`;
-  const [rc, rl] = RISK_TR[ai.risk] || ["neutral", ai.risk];
+  if (ai.status !== "ok") return `<div class="verdict"><b>${t("Değerlendirme yapılamadı:")}</b> ${esc(ai.error)}</div>`;
+  const [rc, rl] = RISK_TR()[ai.risk] || ["neutral", ai.risk];
+  const AS = ASSESS();
   return `<div class="verdict">
-    <span class="badge ${ASSESS[ai.assessment][0]}">${ASSESS[ai.assessment][1]}</span> <span class="badge ${rc}">${rl}</span>
-    ${ai.fixed_in ? `<span class="badge neutral">upstream düzeltme: ${esc(ai.fixed_in)}</span>` : ""}
+    <span class="badge ${AS[ai.assessment][0]}">${AS[ai.assessment][1]}</span> <span class="badge ${rc}">${rl}</span>
+    ${ai.fixed_in ? `<span class="badge neutral">${t("upstream düzeltme: {v}", { v: esc(ai.fixed_in) })}</span>` : ""}
     <div style="margin-top:6px">${esc(ai.summary)}</div>
     ${ai.actions?.length ? `<ul style="margin:6px 0 0;padding-left:18px">${ai.actions.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>` : ""}
-    ${ai.reasoning ? `<details style="margin-top:6px"><summary class="small muted" style="cursor:pointer">Gerekçe</summary><p class="small" style="margin:4px 0 0">${esc(ai.reasoning)}</p></details>` : ""}
-    <div class="who">${esc(ai.provider)} · ${esc(ai.model || "")} · ${CONF_TR[ai.confidence] || ""} · ${ai.seconds ?? "?"} sn · ${fmtDate(ai.at)} · doğrulanmamış yorum; modelin bilgisi bir tarihe kadar günceldir</div>
+    ${ai.reasoning ? `<details style="margin-top:6px"><summary class="small muted" style="cursor:pointer">${t("Gerekçe")}</summary><p class="small" style="margin:4px 0 0">${esc(ai.reasoning)}</p></details>` : ""}
+    <div class="who">${esc(ai.provider)} · ${esc(ai.model || "")} · ${CONF_TR()[ai.confidence] || ""} · ${t("{n} sn", { n: ai.seconds ?? "?" })} · ${fmtDate(ai.at)} · ${t("doğrulanmamış yorum; modelin bilgisi bir tarihe kadar günceldir")}</div>
   </div>`;
 }
 
 function renderCve(c) {
   const i = c.info;
   const e = c.evidence;
-  if (!i) return `<div class="cve"><b>${esc(c.id)}</b> <span class="muted small">NVD ayrıntısı henüz alınmadı</span> · <a class="small" href="https://nvd.nist.gov/vuln/detail/${esc(c.id)}" target="_blank" rel="noopener">NVD ↗</a></div>`;
+  if (!i) return `<div class="cve"><b>${esc(c.id)}</b> <span class="muted small">${t("NVD ayrıntısı henüz alınmadı")}</span> · <a class="small" href="https://nvd.nist.gov/vuln/detail/${esc(c.id)}" target="_blank" rel="noopener">NVD ↗</a></div>`;
   const cv = i.cvss || {};
-  const evBadge = !e ? "" : e.affected === true ? `<span class="badge danger">kurulu sürüm etkileniyor</span>`
-    : e.affected === false ? `<span class="badge ok">kurulu sürümde düzeltilmiş</span>` : `<span class="badge neutral">sürüm bilgisi yok</span>`;
-  const patches = (i.references || []).filter((r) => (r.tags || []).some((t) => ["Patch", "Release Notes", "Vendor Advisory"].includes(t))).slice(0, 4);
+  const evBadge = !e ? "" : e.affected === true ? `<span class="badge danger">${t("kurulu sürüm etkileniyor")}</span>`
+    : e.affected === false ? `<span class="badge ok">${t("kurulu sürümde düzeltilmiş")}</span>` : `<span class="badge neutral">${t("sürüm bilgisi yok")}</span>`;
+  const patches = (i.references || []).filter((r) => (r.tags || []).some((tag) => ["Patch", "Release Notes", "Vendor Advisory"].includes(tag))).slice(0, 4);
   return `<div class="cve">
     <div><b>${esc(c.id)}</b> ${cv.score != null ? `<span class="badge ${cv.score >= 7 ? "danger" : cv.score >= 4 ? "warn" : "info"}">CVSS ${cv.score}</span>` : ""}
-      ${cv.attack_vector ? `<span class="badge neutral">${AV_TR[cv.attack_vector] || esc(cv.attack_vector)}</span>` : ""}
-      ${cv.user_interaction === "REQUIRED" ? `<span class="badge neutral">kullanıcı etkileşimi gerekir</span>` : ""}
-      ${evBadge} <span class="muted small">${e ? esc(e.source) : ""}${e?.fixed_in?.length ? ` · düzeltme: ${e.fixed_in.map(esc).join(", ")}` : ""}</span></div>
+      ${cv.attack_vector ? `<span class="badge neutral">${AV_TR()[cv.attack_vector] || esc(cv.attack_vector)}</span>` : ""}
+      ${cv.user_interaction === "REQUIRED" ? `<span class="badge neutral">${t("kullanıcı etkileşimi gerekir")}</span>` : ""}
+      ${evBadge} <span class="muted small">${e ? esc(e.source) : ""}${e?.fixed_in?.length ? ` · ${t("düzeltme: {v}", { v: e.fixed_in.map(esc).join(", ") })}` : ""}</span></div>
     <p class="small" style="margin:4px 0">${esc(i.description)}</p>
-    <div class="small muted">NVD durumu: ${esc(i.status || "?")} · yayın: ${esc(String(i.published || "").slice(0, 10))} · <a href="https://nvd.nist.gov/vuln/detail/${esc(c.id)}" target="_blank" rel="noopener">NVD ↗</a>
+    <div class="small muted">${t("NVD durumu: {s} · yayın: {d}", { s: esc(i.status || "?"), d: esc(String(i.published || "").slice(0, 10)) })} · <a href="https://nvd.nist.gov/vuln/detail/${esc(c.id)}" target="_blank" rel="noopener">NVD ↗</a>
       ${patches.map((p) => ` · <a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(new URL(p.url).hostname)}</a>`).join("")}</div>
   </div>`;
 }
 
 function renderNews(r) {
-  if (!r.news.length) return `<div class="empty">Haber alınamadı.</div>`;
+  if (!r.news.length) return `<div class="empty">${t("Haber alınamadı.")}</div>`;
   const unread = r.news.filter((n) => !n.read);
-  return `<div class="toolbar">${unread.length ? `<button class="btn sm" data-act="read-all">Tümünü okundu say</button>` : ""}<a class="small" href="https://archlinux.org/news/" target="_blank" rel="noopener">archlinux.org/news ↗</a></div>
+  const busy = new Set(ui.data.news_analyzing || []);
+  return `<div class="toolbar">${unread.length ? `<button class="btn sm" data-act="read-all">${t("Tümünü okundu say")}</button>` : ""}<a class="small" href="https://archlinux.org/news/" target="_blank" rel="noopener">archlinux.org/news ↗</a></div>
     <div class="news">${r.news.map((n) => `<article class="news-item ${n.read || !n.since_last_upgrade ? "" : "unread"}">
       <h3><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a></h3>
-      <span class="muted small">${fmtDay(n.published)}${n.since_last_upgrade ? ` · <span class="badge warn">son güncellemenden sonra</span>` : ""}${n.read ? " · okundu" : ""}</span>
+      <span class="muted small">${fmtDay(n.published)}${n.since_last_upgrade ? ` · <span class="badge warn">${t("son güncellemenden sonra")}</span>` : ""}${n.read ? " · " + t("okundu") : ""}</span>
       <p>${esc(n.summary)}</p>
       ${renderNewsAi(n.ai)}
       <div class="pkg-actions">
-        ${n.read ? "" : `<button class="btn sm ghost" data-act="read" data-id="${esc(n.id)}">Okundu say</button>`}
-        <button class="btn sm ghost" data-act="news-analyze" data-id="${esc(n.id)}" ${(ui.data.news_analyzing || []).includes(n.id) ? "disabled" : ""}>${(ui.data.news_analyzing || []).includes(n.id) ? "Değerlendiriliyor…" : n.ai?.status === "ok" ? "Yeniden değerlendirt" : "Beni etkiliyor mu? (yapay zekâ)"}</button>
+        ${n.read ? "" : `<button class="btn sm ghost" data-act="read" data-id="${esc(n.id)}">${t("Okundu say")}</button>`}
+        <button class="btn sm ghost" data-act="news-analyze" data-id="${esc(n.id)}" ${busy.has(n.id) ? "disabled" : ""}>${busy.has(n.id) ? t("Değerlendiriliyor…") : n.ai?.status === "ok" ? t("Yeniden değerlendirt") : t("Beni etkiliyor mu? (yapay zekâ)")}</button>
       </div>
     </article>`).join("")}</div>`;
 }
 
-const AFFECTS = { yes: ["warn", "Seni etkiliyor"], maybe: ["neutral", "Etkileyebilir"], no: ["ok", "Seni etkilemiyor"] };
-const WHEN = { before_update: "güncellemeden önce", during_update: "güncelleme sırasında", after_update: "güncellemeden sonra", anytime: "istediğin zaman", none: "" };
+const AFFECTS = () => ({ yes: ["warn", t("Seni etkiliyor")], maybe: ["neutral", t("Etkileyebilir")], no: ["ok", t("Seni etkilemiyor")] });
+const WHEN = () => ({ before_update: t("güncellemeden önce"), during_update: t("güncelleme sırasında"), after_update: t("güncellemeden sonra"), anytime: t("istediğin zaman"), none: "" });
 function renderNewsAi(ai, compact = false) {
   if (!ai) return "";
-  if (ai.status !== "ok") return `<div class="verdict small"><b>Değerlendirme yapılamadı:</b> ${esc(ai.error || "")}</div>`;
-  const [cls, label] = AFFECTS[ai.affects] || ["neutral", ai.affects];
-  const when = WHEN[ai.when] ? ` <span class="badge neutral">${esc(WHEN[ai.when])}</span>` : "";
+  if (ai.status !== "ok") return `<div class="verdict small"><b>${t("Değerlendirme yapılamadı:")}</b> ${esc(ai.error || "")}</div>`;
+  const [cls, label] = AFFECTS()[ai.affects] || ["neutral", ai.affects];
+  const w = WHEN()[ai.when];
+  const when = w ? ` <span class="badge neutral">${esc(w)}</span>` : "";
   const steps = (ai.actions || []).map((a) => `<li>${esc(a.text)}${a.command ? `<code class="line">${esc(a.command)}</code>` : ""}</li>`).join("");
-  return `<div class="verdict"><span class="badge ${cls}">Yapay zekâ: ${label}</span>${when} ${esc(ai.summary)}
+  return `<div class="verdict"><span class="badge ${cls}">${t("Yapay zekâ: {v}", { v: label })}</span>${when} ${esc(ai.summary)}
     ${steps ? `<ol class="steps">${steps}</ol>` : ""}
     ${compact ? "" : `<div class="who">${esc(ai.reasoning || "")}</div>`}
-    <div class="who">${esc(ai.provider || "")} · ${esc(ai.model || "")} · ${fmtDate(ai.at)} · doğrulanmamış yorum; komutları çalıştırmadan önce haberin kendisiyle karşılaştır</div></div>`;
+    <div class="who">${esc(ai.provider || "")} · ${esc(ai.model || "")} · ${fmtDate(ai.at)} · ${t("doğrulanmamış yorum; komutları çalıştırmadan önce haberin kendisiyle karşılaştır")}</div></div>`;
 }
 
 function renderRuntime(r) {
@@ -622,99 +658,99 @@ function renderRuntime(r) {
   if (!rt) return "";
   const safe = rt.services.filter((s) => s.safe);
   const unsafe = rt.services.filter((s) => !s.safe);
-  const parts = [`<h3>Yeniden başlatma</h3>`];
+  const parts = [`<h3>${t("Yeniden başlatma")}</h3>`];
   if (!rt.services.length && !rt.user_processes.length && !rt.reboot_recommended) {
-    parts.push(`<p class="muted">Gerek yok: çalışan her şey diskteki güncel kütüphaneleri kullanıyor (son açılış ${fmtDate(rt.boot_time)}).</p>`);
+    parts.push(`<p class="muted">${t("Gerek yok: çalışan her şey diskteki güncel kütüphaneleri kullanıyor (son açılış {date}).", { date: fmtDate(rt.boot_time) })}</p>`);
   } else {
-    parts.push(`<p class="note">Güncellenen bir kütüphane, onu yüklemiş programlar yeniden başlatılana kadar bellekte eski (açıklı) haliyle çalışmaya devam eder.</p>`);
+    parts.push(`<p class="note">${t("Güncellenen bir kütüphane, onu yüklemiş programlar yeniden başlatılana kadar bellekte eski (açıklı) haliyle çalışmaya devam eder.")}</p>`);
     if (rt.reboot_recommended) {
-      const why = [rt.kernel_updated && "çekirdek güncellendi", rt.reboot_packages.length && `${rt.reboot_packages.join(", ")} açılıştan sonra güncellendi`,
-        unsafe.length && "oturumu yöneten servisler etkilendi", rt.user_processes.some((u) => u.session) && "masaüstü oturumu eski kütüphaneleri kullanıyor"].filter(Boolean);
-      parts.push(`<div class="alert warn"><span class="alert-icon">↻</span><div><b>Bilgisayarı yeniden başlatman öneriliyor</b><div class="small">${esc(why.join("; "))}.</div></div></div>`);
+      const why = [rt.kernel_updated && t("çekirdek güncellendi"), rt.reboot_packages.length && t("{list} açılıştan sonra güncellendi", { list: rt.reboot_packages.join(", ") }),
+        unsafe.length && t("oturumu yöneten servisler etkilendi"), rt.user_processes.some((u) => u.session) && t("masaüstü oturumu eski kütüphaneleri kullanıyor")].filter(Boolean);
+      parts.push(`<div class="alert warn"><span class="alert-icon">↻</span><div><b>${t("Bilgisayarı yeniden başlatman öneriliyor")}</b><div class="small">${esc(why.join("; "))}.</div></div></div>`);
     }
     if (safe.length) {
-      parts.push(`<div class="table-wrap"><table><thead><tr><th>Servis</th><th>Başlama</th><th>Sonradan güncellenen paketler</th></tr></thead><tbody>
+      parts.push(`<div class="table-wrap"><table><thead><tr><th>${t("Servis")}</th><th>${t("Başlama")}</th><th>${t("Sonradan güncellenen paketler")}</th></tr></thead><tbody>
         ${safe.map((s) => `<tr><td><b>${esc(s.unit)}</b></td><td class="mono">${fmtDate(s.started)}</td><td>${s.packages.map(esc).join(", ")}</td></tr>`).join("")}
         </tbody></table></div>
-        <div class="toolbar" style="margin-top:8px"><button class="btn sm primary" data-act="restart">Bu ${safe.length} servisi yeniden başlat</button>
+        <div class="toolbar" style="margin-top:8px"><button class="btn sm primary" data-act="restart">${t("Bu {n} servisi yeniden başlat", { n: safe.length })}</button>
         <code class="small muted">sudo systemctl restart ${safe.map((s) => esc(s.unit)).join(" ")}</code></div>`);
     }
-    if (unsafe.length) parts.push(`<p class="small">Yeniden başlatılırsa oturumu kapatacak servisler (bunun yerine bilgisayarı yeniden başlat): <b>${unsafe.map((s) => esc(s.unit)).join(", ")}</b></p>`);
+    if (unsafe.length) parts.push(`<p class="small">${t("Yeniden başlatılırsa oturumu kapatacak servisler (bunun yerine bilgisayarı yeniden başlat):")} <b>${unsafe.map((s) => esc(s.unit)).join(", ")}</b></p>`);
     if (rt.user_processes.length) {
-      parts.push(`<p class="small" style="margin-bottom:4px">Eski kütüphaneyi hâlâ kullanan uygulamaların (kapatıp yeniden aç):</p>
+      parts.push(`<p class="small" style="margin-bottom:4px">${t("Eski kütüphaneyi hâlâ kullanan uygulamaların (kapatıp yeniden aç):")}</p>
         <div class="tags">${rt.user_processes.map((u) => `<span class="badge ${u.session ? "warn" : "neutral"}" title="${esc(u.files.join("\n"))}">${esc(u.name)}${u.count > 1 ? ` ×${u.count}` : ""}</span>`).join("")}</div>`);
     }
   }
   const pub = rt.open_ports.filter((p) => p.public);
-  parts.push(`<h3 style="margin-top:20px">Ağa açık portlar</h3>
-    <p class="note">Yalnızca bu bilgisayarın dışından erişilebilecek adreslerde dinleyenler listelenir. "Tüm ağ" yazanlara bağlı olduğun ağdaki herkes ulaşabilir. Docker'ın yayımladığı portlar ufw kurallarını atlar.</p>
-    ${rt.open_ports.length ? `<div class="table-wrap"><table><thead><tr><th>Port</th><th>Ne</th><th>Adres</th></tr></thead><tbody>
+  parts.push(`<h3 style="margin-top:20px">${t("Ağa açık portlar")}</h3>
+    <p class="note">${t("Yalnızca bu bilgisayarın dışından erişilebilecek adreslerde dinleyenler listelenir. \"Tüm ağ\" yazanlara bağlı olduğun ağdaki herkes ulaşabilir. Docker'ın yayımladığı portlar ufw kurallarını atlar.")}</p>
+    ${rt.open_ports.length ? `<div class="table-wrap"><table><thead><tr><th>${t("Port")}</th><th>${t("Ne")}</th><th>${t("Adres")}</th></tr></thead><tbody>
       ${rt.open_ports.map((p) => `<tr><td class="mono">${p.port}/${esc(p.proto)}</td>
-        <td>${p.container ? `<span class="badge ${p.public ? "danger" : "neutral"}">Docker: ${esc(p.container)}</span> ${esc(p.service || "")}` : esc(p.service || p.process || "bilinmiyor (root süreci)")}</td>
-        <td>${p.public ? `<span class="badge warn">tüm ağ</span>` : `<span class="mono small">${esc(p.address)}</span>`}</td></tr>`).join("")}
-      </tbody></table></div>` : `<p class="muted">Yok.</p>`}
-    ${pub.some((p) => p.container) ? `<p class="small">Docker kapsayıcısını yalnızca bu bilgisayardan erişilebilir yapmak için compose dosyasında portu <code>"127.0.0.1:PORT:PORT"</code> biçiminde yaz.</p>` : ""}`);
+        <td>${p.container ? `<span class="badge ${p.public ? "danger" : "neutral"}">Docker: ${esc(p.container)}</span> ${esc(p.service || "")}` : esc(p.service || p.process || t("bilinmiyor (root süreci)"))}</td>
+        <td>${p.public ? `<span class="badge warn">${t("tüm ağ")}</span>` : `<span class="mono small">${esc(p.address)}</span>`}</td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="muted">${t("Yok.")}</p>`}
+    ${pub.some((p) => p.container) ? `<p class="small">${t("Docker kapsayıcısını yalnızca bu bilgisayardan erişilebilir yapmak için compose dosyasında portu {fmt} biçiminde yaz.", { fmt: `<code>"127.0.0.1:PORT:PORT"</code>` })}</p>` : ""}`);
   return parts.join("");
 }
 
 function renderSystem(r) {
   const s = r.system;
-  return `${renderRuntime(r)}<h3 style="margin-top:20px">Genel</h3><dl class="kv" style="margin-top:8px">
-      <dt>Son tam güncelleme</dt><dd>${s.last_upgrade ? fmtDate(s.last_upgrade) : "bulunamadı"}</dd>
-      <dt>Kurulu paket</dt><dd>${s.installed_count} (${s.foreign_count} AUR / depo dışı)</dd>
-      <dt>Boş disk alanı</dt><dd>${s.disk_free_gb} GB</dd>
-      <dt>Timeshift otomatik anlık görüntü</dt><dd>${s.autosnap ? "kurulu" : "kurulu değil"}</dd>
-      <dt>Yeniden başlatma</dt><dd>${s.reboot_needed ? "gerekiyor (çekirdek güncellendi)" : "gerekmiyor"}</dd>
-      <dt>Son kontrol süresi</dt><dd>${r.duration} sn</dd>
-      <dt>İnceleme sağlayıcısı</dt><dd>${r.review_provider ? esc(r.review_provider) : "kapalı"}</dd>
-      <dt>AUR bekleme süresi</dt><dd>${r.hold_days} gün</dd>
+  return `${renderRuntime(r)}<h3 style="margin-top:20px">${t("Genel")}</h3><dl class="kv" style="margin-top:8px">
+      <dt>${t("Son tam güncelleme")}</dt><dd>${s.last_upgrade ? fmtDate(s.last_upgrade) : t("bulunamadı")}</dd>
+      <dt>${t("Kurulu paket")}</dt><dd>${t("{n} ({f} AUR / depo dışı)", { n: s.installed_count, f: s.foreign_count })}</dd>
+      <dt>${t("Boş disk alanı")}</dt><dd>${s.disk_free_gb} GB</dd>
+      <dt>${t("Timeshift otomatik anlık görüntü")}</dt><dd>${s.autosnap ? t("kurulu") : t("kurulu değil")}</dd>
+      <dt>${t("Yeniden başlatma")}</dt><dd>${s.reboot_needed ? t("gerekiyor (çekirdek güncellendi)") : t("gerekmiyor")}</dd>
+      <dt>${t("Son kontrol süresi")}</dt><dd>${t("{n} sn", { n: r.duration })}</dd>
+      <dt>${t("İnceleme sağlayıcısı")}</dt><dd>${r.review_provider ? esc(r.review_provider) : t("kapalı")}</dd>
+      <dt>${t("AUR bekleme süresi")}</dt><dd>${t("{n} gün", { n: r.hold_days })}</dd>
     </dl>
-    <h3 style="margin-top:20px">Birleştirilmeyi bekleyen yapılandırma dosyaları (.pacnew)</h3>
-    ${s.pacnew.length ? `<p class="note">Paket yeni bir varsayılan yapılandırma getirdiğinde, senin değiştirdiğin dosyanın yanına <code>.pacnew</code> olarak bırakılır. Farkları birleştirmek için terminalde <code>sudo DIFFPROG="kdiff3" pacdiff</code> ya da <code>sudo pacdiff</code> çalıştır.</p>
-      <ul class="mono small">${s.pacnew.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : `<p class="muted">Yok.</p>`}`;
+    <h3 style="margin-top:20px">${t("Birleştirilmeyi bekleyen yapılandırma dosyaları (.pacnew)")}</h3>
+    ${s.pacnew.length ? `<p class="note">${t("Paket yeni bir varsayılan yapılandırma getirdiğinde, senin değiştirdiğin dosyanın yanına {ext} olarak bırakılır. Farkları birleştirmek için terminalde {a} ya da {b} çalıştır.", { ext: "<code>.pacnew</code>", a: `<code>sudo DIFFPROG="kdiff3" pacdiff</code>`, b: "<code>sudo pacdiff</code>" })}</p>
+      <ul class="mono small">${s.pacnew.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : `<p class="muted">${t("Yok.")}</p>`}`;
 }
 
 // ---------- actions ----------
 document.addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-tab],[data-act]");
-  if (!t) return;
-  if (t.dataset.tab) {
-    ui.tab = t.dataset.tab;
+  const el = ev.target.closest("[data-tab],[data-act]");
+  if (!el) return;
+  if (el.dataset.tab) {
+    ui.tab = el.dataset.tab;
     render();
-    if (t.classList.contains("stat")) document.querySelector(".tabs")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (el.classList.contains("stat")) document.querySelector(".tabs")?.scrollIntoView({ behavior: "smooth", block: "start" });
     return;
   }
-  const act = t.dataset.act;
+  const act = el.dataset.act;
   try {
     if (act === "check") await startCheck();
-    else if (act === "read") { await api("/api/news/read", { ids: [t.dataset.id] }); await refresh(); }
+    else if (act === "read") { await api("/api/news/read", { ids: [el.dataset.id] }); await refresh(); }
     else if (act === "read-all") { await api("/api/news/read", { ids: ui.data.report.news.map((n) => n.id) }); await refresh(); }
-    else if (act === "approve") await approve(t.dataset.name, t.dataset.commit, t.dataset.status);
-    else if (act === "unapprove") { await api("/api/unapprove", { name: t.dataset.name }); toast("Onay kaldırıldı"); await refresh(); }
-    else if (act === "rereview") await rereview(t.dataset.name);
+    else if (act === "approve") await approve(el.dataset.name, el.dataset.commit, el.dataset.status);
+    else if (act === "unapprove") { await api("/api/unapprove", { name: el.dataset.name }); toast(t("Onay kaldırıldı")); await refresh(); }
+    else if (act === "rereview") await rereview(el.dataset.name);
     else if (act === "update") await startUpdate();
     else if (act === "restart") await restartServices();
-    else if (act === "ack") await ackVuln(t.dataset.avg, t.dataset.pkg);
-    else if (act === "analyze") await analyzeVuln(t.dataset.avg, t.dataset.pkg);
+    else if (act === "ack") await ackVuln(el.dataset.avg, el.dataset.pkg);
+    else if (act === "analyze") await analyzeVuln(el.dataset.avg, el.dataset.pkg);
     else if (act === "news-analyze") {
-      toast("Haber değerlendiriliyor…");
-      const p = api("/api/news/analyze", { id: t.dataset.id });
+      toast(t("Haber değerlendiriliyor…"));
+      const p = api("/api/news/analyze", { id: el.dataset.id });
       setTimeout(refresh, 300);
       const res = await p;
-      toast(res.status === "ok" ? "Değerlendirme tamamlandı" : res.error, res.status !== "ok");
+      toast(res.status === "ok" ? t("Değerlendirme tamamlandı") : res.error, res.status !== "ok");
       await refresh();
     }
-    else if (act === "analyze-all") { const r = await api("/api/vuln/analyze-all", {}); toast(r.started ? `${r.started} kayıt sırayla değerlendiriliyor` : "Değerlendirilecek kayıt yok"); await refresh(); }
-    else if (act === "unack") { await api("/api/vuln/ack", { avg: t.dataset.avg, package: t.dataset.pkg, undo: true }); await refresh(); }
+    else if (act === "analyze-all") { const r = await api("/api/vuln/analyze-all", {}); toast(r.started ? t("{n} kayıt sırayla değerlendiriliyor", { n: r.started }) : t("Değerlendirilecek kayıt yok")); await refresh(); }
+    else if (act === "unack") { await api("/api/vuln/ack", { avg: el.dataset.avg, package: el.dataset.pkg, undo: true }); await refresh(); }
   } catch (e) {
     toast(e.message, true);
   }
 });
 
 document.addEventListener("change", (ev) => {
-  const t = ev.target;
-  if (t.dataset.sel) { ui.selected.set(t.dataset.sel, t.checked); render(); }
-  else if (t.id === "news-ack") { ui.newsAck = t.checked; render(); }
+  const el = ev.target;
+  if (el.dataset.sel) { ui.selected.set(el.dataset.sel, el.checked); render(); }
+  else if (el.id === "news-ack") { ui.newsAck = el.checked; render(); }
 });
 document.addEventListener("input", (ev) => {
   if (ev.target.id === "repo-filter") {
@@ -739,40 +775,40 @@ $("#btn-check").addEventListener("click", () => startCheck().catch((e) => toast(
 
 async function startCheck() {
   const r = await api("/api/check", {});
-  toast(r.started ? "Kontrol başladı" : "Bir kontrol zaten çalışıyor");
+  toast(r.started ? t("Kontrol başladı") : t("Bir kontrol zaten çalışıyor"));
   await refresh();
 }
 
 async function rereview(name) {
   const sel = document.querySelector(`[data-provider-for="${CSS.escape(name)}"]`);
   const provider = sel ? sel.value : undefined;
-  toast(`${name} yeniden inceleniyor…`);
+  toast(t("{name} yeniden inceleniyor…", { name }));
   const p = api("/api/rereview", { name, provider });
   setTimeout(refresh, 300);
   const res = await p;
-  toast(res.status === "ok" ? `${name}: inceleme tamamlandı` : `${name}: ${res.error}`, res.status !== "ok");
+  toast(res.status === "ok" ? t("{name}: inceleme tamamlandı", { name }) : `${name}: ${res.error}`, res.status !== "ok");
   await refresh();
 }
 
 async function approve(name, commit, status) {
   if (status === "clean") {
     await api("/api/approve", { name, commit });
-    toast(`${name} onaylandı`);
+    toast(t("{name} onaylandı", { name }));
     return refresh();
   }
   const warn = status === "danger"
-    ? "Bu güncellemede <b>tehlikeli</b> bulgular var. Bulguların yanlış alarm olduğundan emin değilsen onaylama."
+    ? t("Bu güncellemede <b>tehlikeli</b> bulgular var. Bulguların yanlış alarm olduğundan emin değilsen onaylama.")
     : status === "unreviewed"
-      ? "Bu güncelleme otomatik olarak incelenemedi. Diff'i kendin okuduysan onaylayabilirsin."
-      : "Bu güncellemede dikkat gerektiren bulgular var. Diff'i ve bulguları okuduysan onaylayabilirsin.";
+      ? t("Bu güncelleme otomatik olarak incelenemedi. Diff'i kendin okuduysan onaylayabilirsin.")
+      : t("Bu güncellemede dikkat gerektiren bulgular var. Diff'i ve bulguları okuduysan onaylayabilirsin.");
   const needType = status === "danger" || status === "warning";
-  const ok = await confirmDialog(`${name} onaylansın mı?`,
-    `<p style="margin:0">${warn}</p>${needType ? `<label class="field"><span>Onaylamak için paket adını yaz: <b>${esc(name)}</b></span><input class="input" id="confirm-input" autocomplete="off"></label>` : ""}
-     <p class="help">Onay yalnızca şu an incelenen commit için geçerlidir; paket yeniden değişirse onay düşer.</p>`,
+  const ok = await confirmDialog(t("{name} onaylansın mı?", { name }),
+    `<p style="margin:0">${warn}</p>${needType ? `<label class="field"><span>${t("Onaylamak için paket adını yaz:")} <b>${esc(name)}</b></span><input class="input" id="confirm-input" autocomplete="off"></label>` : ""}
+     <p class="help">${t("Onay yalnızca şu an incelenen commit için geçerlidir; paket yeniden değişirse onay düşer.")}</p>`,
     needType ? () => $("#confirm-input").value.trim() === name : null);
   if (!ok) return;
   await api("/api/approve", { name, commit, confirm: needType ? name : undefined });
-  toast(`${name} onaylandı`);
+  toast(t("{name} onaylandı", { name }));
   await refresh();
 }
 
@@ -799,45 +835,48 @@ async function startUpdate() {
   const r = ui.data.report;
   const aur = r.aur.filter((a) => a.target && isSelected(a)).map((a) => a.name);
   const list = aur.length ? `<p style="margin:0">AUR: <b>${aur.map(esc).join(", ")}</b></p>` : "";
-  const ok = await confirmDialog("Güncelleme başlatılsın mı?",
-    `<p style="margin:0">${r.repo.length} resmi depo paketi${aur.length ? ` ve ${aur.length} AUR paketi` : ""} güncellenecek.</p>${list}
-     <p class="help">Bir Konsole penceresi açılır. sudo parolanı orada girersin; Timeshift işlem başlamadan anlık görüntü alır.</p>`);
+  const what = aur.length
+    ? t("{n} resmi depo paketi ve {m} AUR paketi güncellenecek.", { n: r.repo.length, m: aur.length })
+    : t("{n} resmi depo paketi güncellenecek.", { n: r.repo.length });
+  const ok = await confirmDialog(t("Güncelleme başlatılsın mı?"),
+    `<p style="margin:0">${what}</p>${list}
+     <p class="help">${t("Bir Konsole penceresi açılır. sudo parolanı orada girersin; Timeshift işlem başlamadan anlık görüntü alır.")}</p>`);
   if (!ok) return;
   const res = await api("/api/update", { aur, news_ack: ui.newsAck });
-  toast(`Güncelleme Konsole'da başladı${res.aur.length ? ` (AUR: ${res.aur.join(", ")})` : ""}`);
+  toast(res.aur.length ? t("Güncelleme Konsole'da başladı (AUR: {list})", { list: res.aur.join(", ") }) : t("Güncelleme Konsole'da başladı"));
   await refresh();
 }
 
 async function analyzeVuln(avg, pkg) {
   const sel = document.querySelector(`[data-vprovider-for="${CSS.escape(avg + ":" + pkg)}"]`);
-  toast(`${pkg} değerlendiriliyor…`);
+  toast(t("{pkg} değerlendiriliyor…", { pkg }));
   const p = api("/api/vuln/analyze", { avg, package: pkg, provider: sel ? sel.value : undefined });
   setTimeout(refresh, 300);
   const res = await p;
-  toast(res.status === "ok" ? `${pkg}: değerlendirme tamamlandı` : `${pkg}: ${res.error}`, res.status !== "ok");
+  toast(res.status === "ok" ? t("{pkg}: değerlendirme tamamlandı", { pkg }) : `${pkg}: ${res.error}`, res.status !== "ok");
   await refresh();
 }
 
 async function ackVuln(avg, pkg) {
-  const ok = await confirmDialog(`${pkg} · ${avg} gizlensin mi?`,
-    `<p style="margin:0">Kayıt, <b>${esc(pkg)}</b> paketinin şu anki sürümü için listeden kalkar. Paket güncellenince yeniden kontrol edilir.</p>
-     <label class="field"><span>Not (isteğe bağlı): neden güvenli ya da ne önlem aldın?</span><input class="input" id="confirm-input" placeholder="örn. upstream 1.7.1'de düzeltilmiş" autocomplete="off"></label>`);
+  const ok = await confirmDialog(t("{pkg} · {avg} gizlensin mi?", { pkg, avg }),
+    `<p style="margin:0">${t("Kayıt, {pkg} paketinin şu anki sürümü için listeden kalkar. Paket güncellenince yeniden kontrol edilir.", { pkg: `<b>${esc(pkg)}</b>` })}</p>
+     <label class="field"><span>${t("Not (isteğe bağlı): neden güvenli ya da ne önlem aldın?")}</span><input class="input" id="confirm-input" placeholder="${esc(t("örn. upstream 1.7.1'de düzeltilmiş"))}" autocomplete="off"></label>`);
   if (!ok) return;
   const v = ui.data.report.vulns.find((x) => x.avg === avg && x.package === pkg);
   const typed = $("#confirm-input")?.value || "";
-  const note = typed || (v?.ai?.status === "ok" ? `Yapay zekâ: ${v.ai.summary}` : "");
+  const note = typed || (v?.ai?.status === "ok" ? t("Yapay zekâ: {v}", { v: v.ai.summary }) : "");
   await api("/api/vuln/ack", { avg, package: pkg, note });
-  toast("Gizlendi");
+  toast(t("Gizlendi"));
   await refresh();
 }
 
 async function restartServices() {
   const units = ui.data.report.runtime.services.filter((s) => s.safe).map((s) => s.unit);
-  const ok = await confirmDialog("Servisler yeniden başlatılsın mı?",
-    `<p style="margin:0"><b>${units.map(esc).join(", ")}</b></p><p class="help">Konsole'da <code>sudo systemctl restart</code> çalışır. Ağ servisleri birkaç saniyeliğine kesilebilir.</p>`);
+  const ok = await confirmDialog(t("Servisler yeniden başlatılsın mı?"),
+    `<p style="margin:0"><b>${units.map(esc).join(", ")}</b></p><p class="help">${t("Konsole'da {cmd} çalışır. Ağ servisleri birkaç saniyeliğine kesilebilir.", { cmd: "<code>sudo systemctl restart</code>" })}</p>`);
   if (!ok) return;
   await api("/api/restart", { units });
-  toast("Konsole'da başlatıldı");
+  toast(t("Konsole'da başlatıldı"));
 }
 
 // ---------- settings ----------
@@ -854,70 +893,74 @@ $("#btn-settings").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
 });
 
-const TYPE_LABEL = { "claude-code": "Claude Code (kurulu CLI, abonelik)", anthropic: "Anthropic API (API anahtarı)", openai: "OpenAI uyumlu (LiteLLM, Ollama, OpenRouter…)" };
+const TYPE_LABEL = () => ({ "claude-code": t("Claude Code (kurulu CLI, abonelik)"), anthropic: t("Anthropic API (API anahtarı)"), openai: t("OpenAI uyumlu (LiteLLM, Ollama, OpenRouter…)") });
 
 function renderSettings() {
   const s = ui.settings;
   const body = $("#settings-body");
+  const lang = s.language === "en" ? "en" : "tr";
   body.innerHTML = `
-    <fieldset><legend>Genel</legend>
+    <fieldset><legend>${t("Genel")}</legend>
       <div class="field-row">
-        <label class="field"><span>AUR bekleme süresi (gün)</span><input class="input" type="number" min="0" max="30" name="hold_days" value="${s.hold_days}"></label>
-        <label class="field"><span>Otomatik kontrol sıklığı</span><select class="input" name="schedule">
-          ${[["daily", "Günde bir (09:00)"], ["twice", "Günde iki (09:00, 19:00)"], ["weekly", "Haftada bir (Pazartesi)"]].map(([v, l]) => `<option value="${v}" ${s.schedule === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-        <label class="field"><span>Pano penceresi</span><select class="input" name="browser">
-          <option value="chromium-app" ${s.browser === "chromium-app" ? "selected" : ""}>Chromium uygulama penceresi</option>
-          <option value="default" ${s.browser === "default" ? "selected" : ""}>Varsayılan tarayıcı</option></select></label>
+        <label class="field"><span>Dil / Language</span><select class="input" name="language">
+          <option value="tr" ${lang === "tr" ? "selected" : ""}>Türkçe</option>
+          <option value="en" ${lang === "en" ? "selected" : ""}>English</option></select></label>
+        <label class="field"><span>${t("AUR bekleme süresi (gün)")}</span><input class="input" type="number" min="0" max="30" name="hold_days" value="${s.hold_days}"></label>
+        <label class="field"><span>${t("Otomatik kontrol sıklığı")}</span><select class="input" name="schedule">
+          ${[["daily", t("Günde bir (09:00)")], ["twice", t("Günde iki (09:00, 19:00)")], ["weekly", t("Haftada bir (Pazartesi)")]].map(([v, l]) => `<option value="${v}" ${s.schedule === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <label class="field"><span>${t("Pano penceresi")}</span><select class="input" name="browser">
+          <option value="chromium-app" ${s.browser === "chromium-app" ? "selected" : ""}>${t("Chromium uygulama penceresi")}</option>
+          <option value="default" ${s.browser === "default" ? "selected" : ""}>${t("Varsayılan tarayıcı")}</option></select></label>
       </div>
-      <label class="check"><input type="checkbox" name="notifications" ${s.notifications ? "checked" : ""}> Zamanlanmış kontrolden sonra masaüstü bildirimi göster</label>
+      <label class="check"><input type="checkbox" name="notifications" ${s.notifications ? "checked" : ""}> ${t("Zamanlanmış kontrolden sonra masaüstü bildirimi göster")}</label>
       <div class="field-row">
-        <label class="field"><span>Ne zaman bildirilsin</span><select class="input" name="notify_level">
-          <option value="important" ${s.notify_level === "important" ? "selected" : ""}>Yalnızca önemli ve yeni bir şey olunca</option>
-          <option value="all" ${s.notify_level === "all" ? "selected" : ""}>Güncelleme olan her kontrolde</option></select></label>
-        <label class="field"><span>Açılıştan sonra bekleme (dakika)</span><input class="input" type="number" min="0" max="120" name="startup_delay_minutes" value="${s.startup_delay_minutes}"></label>
+        <label class="field"><span>${t("Ne zaman bildirilsin")}</span><select class="input" name="notify_level">
+          <option value="important" ${s.notify_level === "important" ? "selected" : ""}>${t("Yalnızca önemli ve yeni bir şey olunca")}</option>
+          <option value="all" ${s.notify_level === "all" ? "selected" : ""}>${t("Güncelleme olan her kontrolde")}</option></select></label>
+        <label class="field"><span>${t("Açılıştan sonra bekleme (dakika)")}</span><input class="input" type="number" min="0" max="120" name="startup_delay_minutes" value="${s.startup_delay_minutes}"></label>
       </div>
-      <p class="help">"Önemli" şunlardır: tehlikeli ya da uyarılı bir AUR güncellemesi, okunmamış bir Arch haberi, düzeltmesi olmayan kritik/yüksek bir açık ya da bekleyen güncellemeyle kapanan bir açık. Aynı şey bir kez bildirilir. Sıradan güncellemeler sessizce panoda bekler; 14 günden uzun güncelleme yapılmazsa haftada bir hatırlatılır.</p>
-      <p class="help">Bekleme süresi: yeni bir AUR sürümü, AUR'a yüklendikten bu kadar gün sonra otomatik olarak güncellemeye eklenir. Zararlı paketler genellikle ilk 1-3 gün içinde fark edilip kaldırılır. Süreyi beklemeden elle onaylayabilirsin.</p>
+      <p class="help">${t("\"Önemli\" şunlardır: tehlikeli ya da uyarılı bir AUR güncellemesi, okunmamış bir Arch haberi, düzeltmesi olmayan kritik/yüksek bir açık ya da bekleyen güncellemeyle kapanan bir açık. Aynı şey bir kez bildirilir. Sıradan güncellemeler sessizce panoda bekler; 14 günden uzun güncelleme yapılmazsa haftada bir hatırlatılır.")}</p>
+      <p class="help">${t("Bekleme süresi: yeni bir AUR sürümü, AUR'a yüklendikten bu kadar gün sonra otomatik olarak güncellemeye eklenir. Zararlı paketler genellikle ilk 1-3 gün içinde fark edilip kaldırılır. Süreyi beklemeden elle onaylayabilirsin.")}</p>
     </fieldset>
-    <fieldset><legend>Yapay zekâ incelemesi</legend>
-      <label class="check"><input type="checkbox" name="review_enabled" ${s.review.enabled ? "checked" : ""}> AUR diff'lerini yapay zekâya inceletir</label>
+    <fieldset><legend>${t("Yapay zekâ incelemesi")}</legend>
+      <label class="check"><input type="checkbox" name="review_enabled" ${s.review.enabled ? "checked" : ""}> ${t("AUR diff'lerini yapay zekâya inceletir")}</label>
       <div class="field-row">
-        <label class="field"><span>Kullanılacak sağlayıcı</span><select class="input" name="active_provider">
+        <label class="field"><span>${t("Kullanılacak sağlayıcı")}</span><select class="input" name="active_provider">
           ${s.providers.map((p) => `<option value="${esc(p.id)}" ${p.id === s.review.active_provider ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
-        <label class="field"><span>En fazla diff boyutu (karakter)</span><input class="input" type="number" name="max_diff_chars" value="${s.review.max_diff_chars}"></label>
-        <label class="field"><span>Zaman aşımı (saniye)</span><input class="input" type="number" name="timeout_seconds" value="${s.review.timeout_seconds}"></label>
+        <label class="field"><span>${t("En fazla diff boyutu (karakter)")}</span><input class="input" type="number" name="max_diff_chars" value="${s.review.max_diff_chars}"></label>
+        <label class="field"><span>${t("Zaman aşımı (saniye)")}</span><input class="input" type="number" name="timeout_seconds" value="${s.review.timeout_seconds}"></label>
       </div>
-      <p class="help">İnceleme yapılamazsa (hata, zaman aşımı, ret) paket "İncelenmedi" sayılır ve onayın olmadan kurulmaz.</p>
+      <p class="help">${t("İnceleme yapılamazsa (hata, zaman aşımı, ret) paket \"İncelenmedi\" sayılır ve onayın olmadan kurulmaz.")}</p>
     </fieldset>
-    <fieldset><legend>Kaynak inceleme</legend>
-      <label class="check"><input type="checkbox" name="src_enabled" ${s.sources.enabled ? "checked" : ""}> AUR güncellemelerinin indirdiği dosyaları (tarball, .deb, AppImage…) kurulmadan önce indirip içini incele</label>
-      <label class="check"><input type="checkbox" name="src_baseline" ${s.sources.baseline ? "checked" : ""}> Bir paket için ilk kez: kurulu sürümün kaynaklarını da indirip karşılaştır</label>
-      <label class="check"><input type="checkbox" name="src_tag" ${s.sources.tag_compare ? "checked" : ""}> Yüklenmiş sürüm arşivlerini (tarball) projenin git etiketiyle karşılaştır (xz tarzı saldırılara karşı)</label>
+    <fieldset><legend>${t("Kaynak inceleme")}</legend>
+      <label class="check"><input type="checkbox" name="src_enabled" ${s.sources.enabled ? "checked" : ""}> ${t("AUR güncellemelerinin indirdiği dosyaları (tarball, .deb, AppImage…) kurulmadan önce indirip içini incele")}</label>
+      <label class="check"><input type="checkbox" name="src_baseline" ${s.sources.baseline ? "checked" : ""}> ${t("Bir paket için ilk kez: kurulu sürümün kaynaklarını da indirip karşılaştır")}</label>
+      <label class="check"><input type="checkbox" name="src_tag" ${s.sources.tag_compare ? "checked" : ""}> ${t("Yüklenmiş sürüm arşivlerini (tarball) projenin git etiketiyle karşılaştır (xz tarzı saldırılara karşı)")}</label>
       <div class="field-row">
-        <label class="field"><span>En büyük dosya (MB)</span><input class="input" type="number" min="1" max="4096" name="src_max_file_mb" value="${s.sources.max_file_mb}"></label>
-        <label class="field"><span>Kontrol başına indirme süresi (dakika)</span><input class="input" type="number" min="1" max="240" name="src_time_budget" value="${s.sources.time_budget_minutes}"></label>
-        <label class="field"><span>Zamanlanmış kontrolde hız sınırı (MB/s, 0 = sınırsız)</span><input class="input" type="number" min="0" max="1000" step="0.5" name="src_rate" value="${s.sources.background_rate_mb}"></label>
+        <label class="field"><span>${t("En büyük dosya (MB)")}</span><input class="input" type="number" min="1" max="4096" name="src_max_file_mb" value="${s.sources.max_file_mb}"></label>
+        <label class="field"><span>${t("Kontrol başına indirme süresi (dakika)")}</span><input class="input" type="number" min="1" max="240" name="src_time_budget" value="${s.sources.time_budget_minutes}"></label>
+        <label class="field"><span>${t("Zamanlanmış kontrolde hız sınırı (MB/s, 0 = sınırsız)")}</span><input class="input" type="number" min="0" max="1000" step="0.5" name="src_rate" value="${s.sources.background_rate_mb}"></label>
       </div>
-      <p class="help">Hiçbir dosya çalıştırılmaz ya da diske açılmaz; arşivler bellekte okunur. Süre dolarsa indirme bir sonraki kontrolde kaldığı yerden sürer; inceleme bitene kadar paket otomatik seçilmez. Sağlama toplamı doğrulanan dosyalar saklanıp güncellemede yay'a verilir, ikinci kez indirilmez.</p>
+      <p class="help">${t("Hiçbir dosya çalıştırılmaz ya da diske açılmaz; arşivler bellekte okunur. Süre dolarsa indirme bir sonraki kontrolde kaldığı yerden sürer; inceleme bitene kadar paket otomatik seçilmez. Sağlama toplamı doğrulanan dosyalar saklanıp güncellemede yay'a verilir, ikinci kez indirilmez.")}</p>
     </fieldset>
-    <fieldset><legend>Güvenlik açıkları</legend>
-      <label class="check"><input type="checkbox" name="news_ai" ${s.security.news_ai ? "checked" : ""}> Son Arch haberlerini yapay zekâya değerlendirt: bu bilgisayarı etkiliyor mu, ne yapmalıyım</label>
-      <label class="check"><input type="checkbox" name="auto_analyze" ${s.security.auto_analyze ? "checked" : ""}> Her kontrolde etkin açıkları yapay zekâya otomatik değerlendirt (eski ve düzeltilmiş kayıtlar elle)</label>
+    <fieldset><legend>${t("Güvenlik açıkları")}</legend>
+      <label class="check"><input type="checkbox" name="news_ai" ${s.security.news_ai ? "checked" : ""}> ${t("Son Arch haberlerini yapay zekâya değerlendirt: bu bilgisayarı etkiliyor mu, ne yapmalıyım")}</label>
+      <label class="check"><input type="checkbox" name="auto_analyze" ${s.security.auto_analyze ? "checked" : ""}> ${t("Her kontrolde etkin açıkları yapay zekâya otomatik değerlendirt (eski ve düzeltilmiş kayıtlar elle)")}</label>
       <div class="field-row" style="align-items:end">
-        <label class="field"><span>NVD'den CVE ayrıntısı çekme süresi (saniye / kontrol)</span><input class="input" type="number" min="0" max="900" name="nvd_budget_seconds" value="${s.security.nvd_budget_seconds}"></label>
-        <label class="field"><span>NVD API anahtarı ${s.security.has_nvd_key ? "· <b>kasada kayıtlı ✓</b>" : "· isteğe bağlı"}</span><input class="input" type="password" id="nvd-key" placeholder="${s.security.has_nvd_key ? "değiştirmek için yeni anahtar" : "nvd.nist.gov/developers/request-an-api-key"}" autocomplete="off"></label>
-        <div style="display:flex;gap:8px"><button type="button" class="btn sm" data-nvd="save">Kaydet</button>${s.security.has_nvd_key ? `<button type="button" class="btn sm ghost" data-nvd="clear">Sil</button>` : ""}</div>
+        <label class="field"><span>${t("NVD'den CVE ayrıntısı çekme süresi (saniye / kontrol)")}</span><input class="input" type="number" min="0" max="900" name="nvd_budget_seconds" value="${s.security.nvd_budget_seconds}"></label>
+        <label class="field"><span>${t("NVD API anahtarı")} ${s.security.has_nvd_key ? `· <b>${t("kasada kayıtlı ✓")}</b>` : "· " + t("isteğe bağlı")}</span><input class="input" type="password" id="nvd-key" placeholder="${s.security.has_nvd_key ? esc(t("değiştirmek için yeni anahtar")) : "nvd.nist.gov/developers/request-an-api-key"}" autocomplete="off"></label>
+        <div style="display:flex;gap:8px"><button type="button" class="btn sm" data-nvd="save">${t("Kaydet")}</button>${s.security.has_nvd_key ? `<button type="button" class="btn sm ghost" data-nvd="clear">${t("Sil")}</button>` : ""}</div>
       </div>
-      <p class="help">Değerlendirme, Yapay zekâ incelemesi bölümünde seçili sağlayıcıyı kullanır. NVD anahtarsız istemcilere 30 saniyede 5 istek izin verir; ayrıntılar önbelleğe alınır ve eksikler sonraki kontrollerde tamamlanır. Ücretsiz bir anahtarla sınır 10 kat artar.</p>
+      <p class="help">${t("Değerlendirme, Yapay zekâ incelemesi bölümünde seçili sağlayıcıyı kullanır. NVD anahtarsız istemcilere 30 saniyede 5 istek izin verir; ayrıntılar önbelleğe alınır ve eksikler sonraki kontrollerde tamamlanır. Ücretsiz bir anahtarla sınır 10 kat artar.")}</p>
     </fieldset>
-    <fieldset><legend>Sağlayıcılar</legend>
+    <fieldset><legend>${t("Sağlayıcılar")}</legend>
       <div id="providers" style="display:grid;gap:10px">${s.providers.map(providerForm).join("")}</div>
-      <div><button type="button" class="btn sm" id="add-provider">+ Sağlayıcı ekle</button></div>
-      <p class="help">API anahtarları ayarlar dosyasına değil, masaüstünün anahtar kasasına (Secret Service) kaydedilir. Anahtarı kaydettikten sonra "Dene" ile bağlantıyı sına.</p>
+      <div><button type="button" class="btn sm" id="add-provider">+ ${t("Sağlayıcı ekle")}</button></div>
+      <p class="help">${t("API anahtarları ayarlar dosyasına değil, masaüstünün anahtar kasasına (Secret Service) kaydedilir. Anahtarı kaydettikten sonra \"Dene\" ile bağlantıyı sına.")}</p>
     </fieldset>`;
   $("#add-provider").onclick = () => {
     const id = "p" + Math.random().toString(36).slice(2, 7);
-    $("#providers").insertAdjacentHTML("beforeend", providerForm({ id, name: "Yeni sağlayıcı", type: "openai", model: "", base_url: "http://localhost:4000/v1", json_mode: "json_schema", _new: true }));
+    $("#providers").insertAdjacentHTML("beforeend", providerForm({ id, name: t("Yeni sağlayıcı"), type: "openai", model: "", base_url: "http://localhost:4000/v1", json_mode: "json_schema", _new: true }));
   };
 }
 
@@ -925,24 +968,24 @@ function providerForm(p) {
   const keyed = p.type === "anthropic" || p.type === "openai";
   return `<div class="provider" data-pid="${esc(p.id)}">
     <div class="provider-head">
-      <input class="input" data-f="name" value="${esc(p.name)}" style="font-weight:600;width:200px" aria-label="Ad">
-      <select class="input" data-f="type">${Object.entries(TYPE_LABEL).map(([v, l]) => `<option value="${v}" ${p.type === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <input class="input" data-f="name" value="${esc(p.name)}" style="font-weight:600;width:200px" aria-label="${esc(t("Ad"))}">
+      <select class="input" data-f="type">${Object.entries(TYPE_LABEL()).map(([v, l]) => `<option value="${v}" ${p.type === v ? "selected" : ""}>${l}</option>`).join("")}</select>
       <span class="spacer"></span>
       <code class="muted small">${esc(p.id)}</code>
-      <button type="button" class="btn sm ghost" data-pact="test">Dene</button>
-      <button type="button" class="icon-btn" data-pact="remove" aria-label="Sil">🗑</button>
+      <button type="button" class="btn sm ghost" data-pact="test">${t("Dene")}</button>
+      <button type="button" class="icon-btn" data-pact="remove" aria-label="${esc(t("Sil"))}">🗑</button>
     </div>
     <div class="field-row">
-      <label class="field"><span>Model</span><input class="input" data-f="model" value="${esc(p.model || "")}" placeholder="${p.type === "claude-code" ? "sonnet, opus, haiku…" : p.type === "anthropic" ? "claude-opus-5-5" : "model adı"}"></label>
-      ${p.type !== "claude-code" ? `<label class="field"><span>Adres${p.type === "anthropic" ? " (boş = api.anthropic.com)" : ""}</span><input class="input" data-f="base_url" value="${esc(p.base_url || "")}" placeholder="${p.type === "openai" ? "http://localhost:4000/v1" : ""}"></label>` : ""}
-      ${p.type === "anthropic" ? `<label class="field"><span>Effort</span><select class="input" data-f="effort">${["low", "medium", "high", "xhigh", "max", ""].map((e) => `<option value="${e}" ${(p.effort || "") === e ? "selected" : ""}>${e || "gönderme"}</option>`).join("")}</select></label>` : ""}
-      ${p.type === "openai" ? `<label class="field"><span>JSON kipi</span><select class="input" data-f="json_mode">${[["json_schema", "json_schema (katı şema)"], ["json_object", "json_object"], ["none", "yok (yalnızca istem)"]].map(([v, l]) => `<option value="${v}" ${(p.json_mode || "json_schema") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}
+      <label class="field"><span>Model</span><input class="input" data-f="model" value="${esc(p.model || "")}" placeholder="${p.type === "claude-code" ? "sonnet, opus, haiku…" : p.type === "anthropic" ? "claude-opus-5-5" : esc(t("model adı"))}"></label>
+      ${p.type !== "claude-code" ? `<label class="field"><span>${t("Adres")}${p.type === "anthropic" ? " " + t("(boş = api.anthropic.com)") : ""}</span><input class="input" data-f="base_url" value="${esc(p.base_url || "")}" placeholder="${p.type === "openai" ? "http://localhost:4000/v1" : ""}"></label>` : ""}
+      ${p.type === "anthropic" ? `<label class="field"><span>Effort</span><select class="input" data-f="effort">${["low", "medium", "high", "xhigh", "max", ""].map((e) => `<option value="${e}" ${(p.effort || "") === e ? "selected" : ""}>${e || t("gönderme")}</option>`).join("")}</select></label>` : ""}
+      ${p.type === "openai" ? `<label class="field"><span>${t("JSON kipi")}</span><select class="input" data-f="json_mode">${[["json_schema", t("json_schema (katı şema)")], ["json_object", "json_object"], ["none", t("yok (yalnızca istem)")]].map(([v, l]) => `<option value="${v}" ${(p.json_mode || "json_schema") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}
     </div>
     ${keyed ? `<div class="field-row" style="align-items:end">
-      <label class="field"><span>API anahtarı ${p.has_key ? "· <b>kasada kayıtlı ✓</b>" : p.type === "openai" ? "· isteğe bağlı" : "· girilmedi"}</span><input class="input" type="password" data-key placeholder="${p.has_key ? "değiştirmek için yeni anahtar gir" : "anahtarı yapıştır"}" autocomplete="off"></label>
-      <div style="display:flex;gap:8px"><button type="button" class="btn sm" data-pact="save-key">Anahtarı kaydet</button>${p.has_key ? `<button type="button" class="btn sm ghost" data-pact="clear-key">Anahtarı sil</button>` : ""}</div>
-    </div>` : `<p class="help">Kurulu <code>claude</code> komutunu araçsız modda çalıştırır; Claude aboneliğinin kotasından harcar.</p>`}
-    ${p.type === "anthropic" ? `<p class="help">Opus 5.5, Sonnet 5.5 ve Fable modellerinde, güvenlik sınıflandırıcısı incelemeyi reddederse istek otomatik olarak başka bir modelle yeniden denenir (server-side fallback).</p>` : ""}
+      <label class="field"><span>${t("API anahtarı")} ${p.has_key ? `· <b>${t("kasada kayıtlı ✓")}</b>` : p.type === "openai" ? "· " + t("isteğe bağlı") : "· " + t("girilmedi")}</span><input class="input" type="password" data-key placeholder="${esc(p.has_key ? t("değiştirmek için yeni anahtar gir") : t("anahtarı yapıştır"))}" autocomplete="off"></label>
+      <div style="display:flex;gap:8px"><button type="button" class="btn sm" data-pact="save-key">${t("Anahtarı kaydet")}</button>${p.has_key ? `<button type="button" class="btn sm ghost" data-pact="clear-key">${t("Anahtarı sil")}</button>` : ""}</div>
+    </div>` : `<p class="help">${t("Kurulu {cmd} komutunu araçsız modda çalıştırır; Claude aboneliğinin kotasından harcar.", { cmd: "<code>claude</code>" })}</p>`}
+    ${p.type === "anthropic" ? `<p class="help">${t("Opus 5.5, Sonnet 5.5 ve Fable modellerinde, güvenlik sınıflandırıcısı incelemeyi reddederse istek otomatik olarak başka bir modelle yeniden denenir (server-side fallback).")}</p>` : ""}
     <div class="test-result" hidden></div>
   </div>`;
 }
@@ -950,6 +993,7 @@ function providerForm(p) {
 function collectSettings() {
   const f = $("#settings-form");
   const s = structuredClone(ui.settings);
+  s.language = f.language.value;
   s.hold_days = Number(f.hold_days.value);
   s.schedule = f.schedule.value;
   s.browser = f.browser.value;
@@ -963,7 +1007,7 @@ function collectSettings() {
   s.security = { ...s.security, auto_analyze: f.auto_analyze.checked, news_ai: f.news_ai.checked,
                  nvd_budget_seconds: Number(f.nvd_budget_seconds.value) };
   delete s.security.has_nvd_key;
-  s.sources = { enabled: f.src_enabled.checked, baseline: f.src_baseline.checked, tag_compare: f.src_tag.checked,
+  s.sources = { ...s.sources, enabled: f.src_enabled.checked, baseline: f.src_baseline.checked, tag_compare: f.src_tag.checked,
                 max_file_mb: Number(f.src_max_file_mb.value), time_budget_minutes: Number(f.src_time_budget.value),
                 background_rate_mb: Number(f.src_rate.value) };
   s.providers = [...document.querySelectorAll("#providers .provider")].map((el) => {
@@ -990,12 +1034,12 @@ $("#settings-body").addEventListener("click", async (ev) => {
   if (n) {
     try {
       const value = n.dataset.nvd === "save" ? $("#nvd-key").value.trim() : "";
-      if (n.dataset.nvd === "save" && !value) return toast("Önce anahtarı yapıştır", true);
+      if (n.dataset.nvd === "save" && !value) return toast(t("Önce anahtarı yapıştır"), true);
       await saveSettings(false);
       await api("/api/secret", { provider: "nvd", value });
       await loadSettings();
       renderSettings();
-      toast(value ? "NVD anahtarı kaydedildi" : "NVD anahtarı silindi");
+      toast(value ? t("NVD anahtarı kaydedildi") : t("NVD anahtarı silindi"));
     } catch (e) { toast(e.message, true); }
     return;
   }
@@ -1007,23 +1051,23 @@ $("#settings-body").addEventListener("click", async (ev) => {
   const show = (msg) => { out.hidden = false; out.textContent = msg; };
   try {
     if (b.dataset.pact === "remove") {
-      if (document.querySelectorAll("#providers .provider").length <= 1) return toast("En az bir sağlayıcı kalmalı", true);
+      if (document.querySelectorAll("#providers .provider").length <= 1) return toast(t("En az bir sağlayıcı kalmalı"), true);
       card.remove();
     } else if (b.dataset.pact === "save-key" || b.dataset.pact === "clear-key") {
       const value = b.dataset.pact === "save-key" ? card.querySelector("[data-key]").value : "";
-      if (b.dataset.pact === "save-key" && !value) return toast("Önce anahtarı yapıştır", true);
+      if (b.dataset.pact === "save-key" && !value) return toast(t("Önce anahtarı yapıştır"), true);
       await saveSettings(false);  // provider must exist server-side first
       await api("/api/secret", { provider: pid, value });
       await loadSettings();
       renderSettings();
-      toast(value ? "Anahtar kasaya kaydedildi" : "Anahtar silindi");
+      toast(value ? t("Anahtar kasaya kaydedildi") : t("Anahtar silindi"));
     } else if (b.dataset.pact === "test") {
-      show("Deneniyor… (bir örnek diff gönderiliyor)");
+      show(t("Deneniyor… (bir örnek diff gönderiliyor)"));
       b.disabled = true;
       const res = await api("/api/test-provider", { provider: pid, settings: collectSettings() });
       b.disabled = false;
       show(res.status === "ok"
-        ? `✓ Çalışıyor: ${res.model || ""} · ${res.seconds} sn · karar "${res.verdict}"\n${res.summary}`
+        ? "✓ " + t("Çalışıyor: {model} · {sec} sn · karar \"{verdict}\"", { model: res.model || "", sec: res.seconds, verdict: res.verdict }) + `\n${res.summary}`
         : `✕ ${res.error}`);
     }
   } catch (e) {
@@ -1033,12 +1077,19 @@ $("#settings-body").addEventListener("click", async (ev) => {
 });
 
 async function saveSettings(close = true) {
+  const before = ui.settings?.language === "en" ? "en" : "tr";
   const saved = await api("/api/settings", collectSettings());
   ui.settings = saved.settings;
-  $("#settings-msg").textContent = "Kaydedildi" + (saved.schedule === "güncellendi" ? " · zamanlayıcı güncellendi" : "");
+  const updated = saved.schedule === "güncellendi" || saved.schedule === "updated";
+  $("#settings-msg").textContent = t("Kaydedildi") + (updated ? " · " + t("zamanlayıcı güncellendi") : "");
+  const after = ui.settings?.language === "en" ? "en" : "tr";
+  if (close && after !== before) {
+    location.reload();  // the dictionary applies on load
+    return;
+  }
   if (close) {
     $("#dlg-settings").close();
-    toast("Ayarlar kaydedildi");
+    toast(t("Ayarlar kaydedildi"));
     render();
   }
 }
@@ -1049,4 +1100,7 @@ $("#btn-save-settings").addEventListener("click", async (ev) => {
 });
 
 // ---------- boot ----------
-loadSettings().catch(() => {}).finally(refresh);
+loadSettings().catch(() => {})
+  .then(() => loadLanguage(ui.settings?.language))
+  .then(applyStatic)
+  .finally(refresh);

@@ -17,6 +17,7 @@ from pathlib import Path
 from . import __version__
 from .config import DATA_DIR, atomic_write_json, read_json
 from .system import vercmp
+from .i18n import t
 
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId="
 CACHE_FILE = DATA_DIR / "cve-cache.json"
@@ -151,15 +152,15 @@ def evidence(info: dict, pkg: str, installed: str) -> dict:
                 hi_ok = ((not c["end_excl"] or vercmp(up, c["end_excl"]) < 0)
                          and (not c["end_incl"] or vercmp(up, c["end_incl"]) <= 0))
                 if lo_ok and hi_ok and (c["end_excl"] or c["end_incl"]):
-                    return {"affected": True, "source": "NVD sürüm aralığı", "fixed_in": sorted(fixed_in)}
+                    return {"affected": True, "source": t("NVD sürüm aralığı"), "fixed_in": sorted(fixed_in)}
             for c in exact:
                 if c["update"] in ("*", "-") and vercmp(up, c["version"]) == 0:
-                    return {"affected": True, "source": "NVD etkilenen sürüm listesi", "fixed_in": sorted(fixed_in)}
+                    return {"affected": True, "source": t("NVD etkilenen sürüm listesi"), "fixed_in": sorted(fixed_in)}
             if any(c["end_excl"] or c["end_incl"] for c in ranges):
-                return {"affected": False, "source": "NVD sürüm aralığı", "fixed_in": sorted(fixed_in)}
+                return {"affected": False, "source": t("NVD sürüm aralığı"), "fixed_in": sorted(fixed_in)}
             if exact and all(vercmp(up, c["version"]) > 0 for c in exact):
                 last = max((c["version"] for c in exact), key=lambda v: (len(v.split(".")), v))
-                return {"affected": False, "source": f"NVD listesindeki tüm etkilenen sürümlerden yeni (son: {last})",
+                return {"affected": False, "source": t("NVD listesindeki tüm etkilenen sürümlerden yeni (son: {last})", last=last),
                         "fixed_in": []}
         # Fall back to "before X" in the description, when it names this product.
         desc = info.get("description", "")
@@ -168,12 +169,12 @@ def evidence(info: dict, pkg: str, installed: str) -> dict:
             if befores:
                 fixed_in.update(befores)
                 if all(vercmp(up, b) < 0 for b in befores):
-                    return {"affected": True, "source": "CVE açıklaması", "fixed_in": sorted(fixed_in)}
+                    return {"affected": True, "source": t("CVE açıklaması"), "fixed_in": sorted(fixed_in)}
                 if all(vercmp(up, b) >= 0 for b in befores):
-                    return {"affected": False, "source": "CVE açıklaması", "fixed_in": sorted(fixed_in)}
+                    return {"affected": False, "source": t("CVE açıklaması"), "fixed_in": sorted(fixed_in)}
     except Exception:
         pass
-    return {"affected": None, "source": "NVD'de sürüm bilgisi yok" if not matches else "karşılaştırılamadı",
+    return {"affected": None, "source": t("NVD'de sürüm bilgisi yok") if not matches else t("karşılaştırılamadı"),
             "fixed_in": sorted(fixed_in)}
 
 
@@ -245,10 +246,10 @@ def arch_patch_evidence(pkg: str, installed: str, cve_ids: list[str]) -> dict[st
         if c.lower() not in low:
             continue
         if pver and vercmp(pver, installed) > 0:
-            out[c] = {"affected": True, "source": f"Arch yaması {pver} sürümünde; henüz kurulu değil",
+            out[c] = {"affected": True, "source": t("Arch yaması {pver} sürümünde; henüz kurulu değil", pver=pver),
                       "fixed_in": [pver], "arch_patch": True}
         else:
-            out[c] = {"affected": False, "source": f"Arch paketi bu CVE için yama uyguluyor ({base} PKGBUILD)",
+            out[c] = {"affected": False, "source": t("Arch paketi bu CVE için yama uyguluyor ({base} PKGBUILD)", base=base),
                       "fixed_in": [], "arch_patch": True}
     return out
 

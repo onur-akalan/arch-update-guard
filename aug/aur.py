@@ -14,6 +14,7 @@ from pathlib import Path
 from .config import AUR_MIRROR_DIR, YAY_CACHE
 from .feeds import http_get
 from .system import run, vercmp
+from .i18n import t
 
 AUR = "https://aur.archlinux.org"
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -36,7 +37,7 @@ def rpc_info(names: list[str]) -> dict[str, dict]:
         qs = urllib.parse.urlencode([("arg[]", n) for n in chunk])
         data = json.loads(http_get(f"{AUR}/rpc/v5/info?{qs}"))
         if data.get("type") == "error":
-            raise RuntimeError("AUR RPC hatası: " + data.get("error", "?"))
+            raise RuntimeError(t("AUR RPC hatası: ") + data.get("error", "?"))
         for r in data.get("results", []):
             out[r["Name"]] = r
     return out
@@ -51,7 +52,7 @@ def git(repo: Path, *args: str, timeout: int = 120, check: bool = True) -> str:
 
 def sync_mirror(pkgbase: str) -> Path:
     if not re.fullmatch(r"[a-z0-9@._+-]+", pkgbase):
-        raise ValueError(f"geçersiz paket adı: {pkgbase!r}")
+        raise ValueError(t("geçersiz paket adı: {name}", name=repr(pkgbase)))
     repo = AUR_MIRROR_DIR / pkgbase
     url = f"{AUR}/{pkgbase}.git"
     if not (repo / ".git").exists() and not (repo / "HEAD").exists():
@@ -69,7 +70,7 @@ def remote_head(repo: Path) -> str:
         out = run([*GIT, "-C", str(repo), "rev-parse", "--verify", "--quiet", ref + "^{commit}"]).stdout.strip()
         if out:
             return out
-    raise RuntimeError("uzak dalın son commit'i bulunamadı")
+    raise RuntimeError(t("uzak dalın son commit'i bulunamadı"))
 
 
 def ls_remote_head(pkgbase: str) -> str | None:
@@ -141,12 +142,12 @@ def find_base_commit(repo: Path, pkgbase: str, pkgname: str, installed_version: 
         if head and has_commit(repo, head):
             v = srcinfo_version(srcinfo_at(repo, head))
             if v == installed_version or is_vcs(pkgname):
-                return head, "yay derleme klasörü"
+                return head, t("yay derleme klasörü")
     log = git(repo, "log", "--format=%H", remote_head(repo))
     for commit in log.split():
         if srcinfo_version(srcinfo_at(repo, commit)) == installed_version:
-            return commit, "sürüm eşleşmesi"
-    return None, "bulunamadı"
+            return commit, t("sürüm eşleşmesi")
+    return None, t("bulunamadı")
 
 
 def has_ref(repo: Path, ref: str) -> bool:
