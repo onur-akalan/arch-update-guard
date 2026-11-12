@@ -7,7 +7,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from . import aur, feeds, review, rules, state, system
+from . import aur, deps, feeds, review, rules, runtime, state, system
 from .config import REPORT_FILE, RUNTIME_DIR, atomic_write_json, load_settings, read_json
 
 log = logging.getLogger("aug")
@@ -84,19 +84,21 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
             llm = review.review(ctx, settings)
             st["reviews"][key] = llm
 
-    worst = rules.worst(findings)
-    if worst == rules.HIGH or (llm and llm.get("verdict") == "malicious"):
-        status = "danger"
-    elif worst == rules.MEDIUM or (llm and llm.get("verdict") == "suspicious"):
-        status = "warning"
-    elif not llm or llm.get("status") != "ok":
-        status = "unreviewed"
-    else:
-        status = "clean"
+    new_aur_deps, new_repo_deps = deps.review_new_deps(name, old_info, new_info, settings, st, keep_keys)
+    if new_aur_deps:
+        findings.append(rules._f(rules.MEDIUM, "new-aur-dependency",
+                                 "Güncelleme, kurulu olmayan yeni bir AUR paketini bağımlılık olarak ekliyor",
+                                 ", ".join(d["name"] for d in deps.flatten(new_aur_deps))
+                                 + ". yay bunları da derleyip kurar; aşağıda ayrıca incelendiler."))
+    if new_repo_deps:
+        findings.append(rules._f(rules.INFO, "new-repo-dependency",
+                                 "Resmi depolardan yeni bağımlılık kurulacak", ", ".join(new_repo_deps)))
+    status = deps.combine_status(findings, llm, [d["status"] for d in new_aur_deps])
 
     hold_until = int(meta["LastModified"]) + settings["hold_days"] * 86400
+    akey = deps.approval_key(target, new_aur_deps)
     approval = st["approvals"].get(name)
-    approved = bool(approval and approval.get("commit") == target)
+    approved = bool(approval and approval.get("commit") == akey)
     held = time.time() < hold_until
     return {
         **base_item,
@@ -110,6 +112,9 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
         "commits": commits,
         "base_source": base_source,
         "target": target,
+        "approval_key": akey,
+        "new_aur_deps": new_aur_deps,
+        "new_repo_deps": new_repo_deps,
         "maintainer": meta.get("Maintainer"),
         "known_maintainer": known,
         "votes": meta.get("NumVotes"),
@@ -202,6 +207,32 @@ def _run(settings: dict) -> dict:
     for r in repo:
         r["fixes_cve"] = r["name"] in fixes
 
+    _progress("Çalışan servisler ve eski kütüphaneler kontrol ediliyor")
+    try:
+        rt = runtime.snapshot()
+    except Exception as e:
+        log.exception("runtime snapshot")
+        rt = {"services": [], "user_processes": [], "open_ports": [], "reboot_packages": [],
+              "reboot_recommended": False, "kernel_updated": False, "boot_time": 0, "_pkg_units": {}}
+        errors.append(f"Çalışan servisler okunamadı: {e}")
+    pkg_units = rt.pop("_pkg_units")
+
+    _progress("Açıkların etkilediği uygulamalar bulunuyor")
+    explicit = set(system.run(["pacman", "-Qeq"]).stdout.split())
+    users_cache: dict[str, list[str]] = {}
+    sev_rank = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+    for v in vulns:
+        p = v["package"]
+        if p not in users_cache:
+            users_cache[p] = runtime.explicit_users(p, explicit)
+        v["explicit"] = p in explicit
+        v["used_by"] = users_cache[p]
+        v["services"] = sorted(pkg_units.get(p, ()))
+        # Higher = deal with it first.
+        v["priority"] = (sev_rank.get(v["severity"], 0) * 10 + (8 if v["services"] else 0)
+                         + (5 if v["fix_pending"] else 0) + min(len(v["used_by"]), 20) / 10)
+    vulns.sort(key=lambda v: -v["priority"])
+
     _progress("Sistem durumu okunuyor")
     report = {
         "generated_at": int(time.time()),
@@ -211,9 +242,10 @@ def _run(settings: dict) -> dict:
         "aur": aur_items,
         "news": news,
         "vulns": vulns,
+        "runtime": rt,
         "system": {
             "last_upgrade": last_up.isoformat() if last_up else None,
-            "reboot_needed": system.reboot_needed(),
+            "reboot_needed": rt["kernel_updated"],
             "pacnew": system.pacnew_files(),
             "disk_free_gb": round(system.disk_free_gb(), 1),
             "autosnap": system.autosnap_installed(),

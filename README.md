@@ -11,15 +11,21 @@ Arch Linux için yerel bir güncelleme panosu. Resmi depo ve AUR güncellemeleri
 | İnceleme, katman 1 | Sabit kurallar (`aug/rules.py`) | Her zaman çalışır. Yapay zekâ kararı bir kural bulgusunu temizleyemez. |
 | İnceleme, katman 2 | Seçtiğin yapay zekâ sağlayıcısı | Hata, zaman aşımı ya da ret durumunda paket "İncelenmedi" sayılır. |
 | Arch haberleri | archlinux.org/feeds/news | Son güncellemenden sonra çıkan haberi okuduğunu onaylamadan güncelleme başlamaz. |
-| Güvenlik açıkları | security.archlinux.org | Kurulu sürümleri etkileyen kayıtlar; bekleyen güncelleme düzeltiyorsa belirtilir. |
-| Sistem | pacman.log, pacdiff, disk | Yeniden başlatma ihtiyacı, `.pacnew` dosyaları, boş alan. |
+| Yeni AUR bağımlılıkları | `.SRCINFO` depends/makedepends farkı | Güncelleme kurulu olmayan bir AUR paketini getiriyorsa o paket de baştan sona incelenir (2 seviyeye kadar). |
+| Güvenlik açıkları | security.archlinux.org | Kurulu sürümleri etkileyen kayıtlar; hangi uygulamaları ve çalışan servisleri etkilediği, bekleyen güncellemenin düzeltip düzeltmediği. |
+| Yeniden başlatma | pacman.log, systemd, /proc | Eski kütüphaneyle çalışan servisler ve uygulamalar; bilgisayarın yeniden başlatılması gerekip gerekmediği. |
+| Ağa açık portlar | `ss`, `docker ps` | Dışarıdan erişilebilen dinleyiciler; Docker'ın tüm ağa açtığı portlar. |
+| Sistem | pacman.log, pacdiff, disk | `.pacnew` dosyaları, boş alan. |
 
 AUR paketleri şu kurallarla güncellemeye girer:
 
 - **Temiz ve bekleme süresi dolmuş** paketler otomatik olarak işaretlenir.
 - **Bekleme süresindeki** temiz paketleri beklemeden elle onaylayabilirsin.
 - **İncelenmemiş, dikkat ya da tehlike** durumundaki paketler yalnızca elle onaylanabilir. Dikkat ve tehlike için paket adını yazman gerekir.
-- **Onay commit'e bağlıdır.** Paket AUR'da yeniden değişirse onay düşer. Güncelleme başlamadan hemen önce AUR deposunun hâlâ incelenen commit'te olduğu yeniden kontrol edilir.
+- **Yeni bir AUR bağımlılığı getiren** güncelleme her zaman elle onay ister; bağımlılık temiz olsa bile.
+- **Onay commit'e bağlıdır.** Onay, paketin ve getirdiği yeni AUR bağımlılıklarının incelenen commit'lerini kapsar; herhangi biri AUR'da değişirse onay düşer. Güncelleme başlamadan hemen önce ve betik içinde yay çalışmadan önce bu commit'ler yeniden kontrol edilir.
+
+Yeniden başlatma kontrolü hakkında: kullanıcı süreçleri `/proc/*/maps` içinde silinmiş kütüphane aranarak kesin olarak bulunur. root olarak çalışan sistem servislerinin belleği okunamadığı için onlar, başlama zamanı ile ikili dosyalarının ve kütüphanelerinin ait olduğu paketlerin yükseltme zamanı karşılaştırılarak tahmin edilir. Oturumu kapatacak servisler (dbus, logind, sddm…) için servis yerine bilgisayarın yeniden başlatılması önerilir.
 
 ## Kullanım
 

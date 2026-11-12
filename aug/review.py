@@ -77,6 +77,8 @@ def build_prompt(ctx: dict) -> str:
         lines.append("Automatic rule-based findings (may contain false positives):")
         for f in ctx["static_findings"]:
             lines.append(f"- [{f['severity']}] {f['title']} {f['file']} {f['line'] or f['detail']}".rstrip())
+    if ctx.get("note"):
+        lines += ["", f"Context: {ctx['note']}"]
     lines += ["", f"Diff stat:\n{ctx['stat']}"]
     if ctx.get("truncated"):
         lines.append(f"NOTE: the diff was truncated to {len(ctx['diff'])} of {ctx['diff_chars']} characters.")

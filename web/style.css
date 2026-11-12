@@ -194,6 +194,13 @@ details.more[open] > summary::before { content: "▾ "; }
 .diff .del { background: var(--del); color: var(--del-text); }
 .diff .hunk { color: var(--info); background: var(--info-soft); }
 .diff .file { color: var(--text); font-weight: 700; background: var(--surface-2); border-top: 1px solid var(--border); padding-top: 4px; padding-bottom: 4px; }
+.deps { display: grid; gap: 10px; padding: 12px; border-radius: 8px; border: 1px dashed var(--border); }
+.deps h3 { font-size: 13px; }
+.dep { border: 1px solid var(--border); border-radius: 8px; display: grid; gap: 8px; padding-bottom: 8px; background: var(--surface); }
+.dep > .verdict, .dep > .findings, .dep > .meta-grid, .dep > .deps { margin: 0 12px; }
+.dep .pkg-head { padding: 10px 12px 0; }
+.dep.danger { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
+.dep.warning, .dep.error { border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
 .commits { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 12.5px; }
 
 /* Tables */

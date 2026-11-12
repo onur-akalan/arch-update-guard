@@ -16,7 +16,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, check, review, schedule, state, updater
+from . import __version__, check, deps, review, schedule, state, updater
 from .config import (SERVER_FILE, WEB_DIR, SettingsError, atomic_write_json, delete_secret, get_secret,
                      load_settings, read_json, save_settings, set_secret, validate_settings)
 
@@ -86,25 +86,14 @@ class App:
             for a in fresh["aur"]:
                 if a["name"] == name and a.get("target") == item["target"]:
                     a["llm"] = res
-                    a["status"] = _status(a["findings"], res)
+                    a["status"] = deps.combine_status(a["findings"], res,
+                                                      [d["status"] for d in a.get("new_aur_deps", [])])
                     a["auto_ok"] = a["status"] == "clean" and not a.get("held")
             atomic_write_json(check.REPORT_FILE, fresh)
             return res
         finally:
             with self.lock:
                 self.review_busy.discard(name)
-
-
-def _status(findings, llm):
-    from . import rules
-    worst = rules.worst(findings)
-    if worst == rules.HIGH or (llm and llm.get("verdict") == "malicious"):
-        return "danger"
-    if worst == rules.MEDIUM or (llm and llm.get("verdict") == "suspicious"):
-        return "warning"
-    if not llm or llm.get("status") != "ok":
-        return "unreviewed"
-    return "clean"
 
 
 def _public_settings(settings: dict) -> dict:
@@ -125,7 +114,7 @@ def _decorate_report(report: dict | None) -> dict | None:
     for a in report["aur"]:
         if a.get("target"):
             ap = st["approvals"].get(a["name"])
-            a["approved"] = bool(ap and ap.get("commit") == a["target"])
+            a["approved"] = bool(ap and ap.get("commit") == a.get("approval_key", a["target"]))
             a["held"] = now < a.get("hold_until", 0)
             a["auto_ok"] = a["status"] == "clean" and not a["held"]
     return report
@@ -252,7 +241,8 @@ def make_handler(app: App, port: int):
     def r_approve(body):
         name, commit = body.get("name"), body.get("commit")
         report = check.load_report() or {"aur": []}
-        item = next((a for a in report["aur"] if a["name"] == name and a.get("target") == commit), None)
+        item = next((a for a in report["aur"]
+                     if a["name"] == name and a.get("target") and a.get("approval_key", a["target"]) == commit), None)
         if not item:
             raise ValueError("Paket ya da commit güncel raporda yok; yeniden kontrol et.")
         if item["status"] in ("danger", "warning") and body.get("confirm") != name:
@@ -302,7 +292,13 @@ def make_handler(app: App, port: int):
         report = _decorate_report(report)
         return updater.launch(report, body.get("aur") or [], bool(body.get("news_ack")))
 
-    ROUTES = {"/api/check": r_check, "/api/news/read": r_news_read, "/api/approve": r_approve,
+    def r_restart(body):
+        report = check.load_report()
+        if not report:
+            raise ValueError("Önce bir kontrol çalıştır.")
+        return updater.launch_restart(report, body.get("units") or [])
+
+    ROUTES = {"/api/restart": r_restart, "/api/check": r_check, "/api/news/read": r_news_read, "/api/approve": r_approve,
               "/api/unapprove": r_unapprove, "/api/rereview": r_rereview, "/api/settings": r_settings,
               "/api/secret": r_secret, "/api/test-provider": r_test_provider, "/api/update": r_update}
     return Handler

@@ -88,7 +88,7 @@ def srcinfo_at(repo: Path, commit: str) -> dict:
 
 def parse_srcinfo(text: str) -> dict:
     """Return pkgbase-level keys plus aggregated source/checksum lists."""
-    info: dict = {"sources": [], "checksums": [], "install": [], "validpgpkeys": []}
+    info: dict = {"sources": [], "checksums": [], "install": [], "validpgpkeys": [], "depends": []}
     section = None
     for raw in text.splitlines():
         line = raw.strip()
@@ -107,6 +107,8 @@ def parse_srcinfo(text: str) -> dict:
             info["install"].append(val)
         elif key == "validpgpkeys":
             info["validpgpkeys"].append(val)
+        elif re.fullmatch(r"(make|check)?depends(_\w+)?", key):
+            info["depends"].append(val)
         elif section == "pkgbase" and key in ("pkgver", "pkgrel", "epoch", "url"):
             info[key] = val
     return info

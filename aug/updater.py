@@ -16,7 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import aur, state
+from . import aur, deps, state
 from .config import PROJECT_DIR, RUNTIME_DIR
 
 RESULT_FILE = RUNTIME_DIR / "update-result.json"
@@ -55,7 +55,7 @@ def plan(report: dict, selected_aur: list[str]) -> list[dict]:
         if not item or not item.get("target"):
             raise UpdateError(f"{name}: güncellenecek bir AUR sürümü yok")
         approval = st["approvals"].get(name)
-        approved = bool(approval and approval.get("commit") == item["target"])
+        approved = bool(approval and approval.get("commit") == item.get("approval_key", item["target"]))
         if not (approved or item.get("auto_ok")):
             raise UpdateError(f"{name}: onaylanmamış (durum: {item['status']}"
                               f"{', bekleme süresinde' if item.get('held') else ''})")
@@ -71,12 +71,12 @@ def launch(report: dict, selected_aur: list[str], news_acknowledged: bool) -> di
         raise UpdateError("Son güncellemeden sonra yayımlanan Arch haberlerini okuduğunu onaylaman gerekiyor.")
     chosen = plan(report, selected_aur)
 
-    # Final race check: the AUR repo must still be at the reviewed commit.
+    # Final race check: every AUR repo involved (the package and any new AUR
+    # dependency it pulls in) must still be at the reviewed commit.
     for item in chosen:
-        head = aur.ls_remote_head(item["pkgbase"])
-        if head != item["target"]:
-            raise UpdateError(f"{item['name']}: AUR deposu incelendikten sonra değişti. "
-                              "Önce yeniden kontrol et.")
+        for pkgbase, want, label in _heads(item):
+            if aur.ls_remote_head(pkgbase) != want:
+                raise UpdateError(f"{label}: AUR deposu incelendikten sonra değişti. Önce yeniden kontrol et.")
 
     terminal = shutil.which("konsole")
     if not terminal:
@@ -96,10 +96,44 @@ def launch(report: dict, selected_aur: list[str], news_acknowledged: bool) -> di
     return {"pid": proc.pid, "aur": [i["name"] for i in chosen], "repo": len(report["repo"])}
 
 
+def launch_restart(report: dict, units: list[str]) -> dict:
+    allowed = {s["unit"] for s in report.get("runtime", {}).get("services", []) if s.get("safe")}
+    units = [u for u in units if u in allowed]
+    if not units:
+        raise UpdateError("Yeniden başlatılacak geçerli bir servis seçilmedi.")
+    terminal = shutil.which("konsole")
+    if not terminal:
+        raise UpdateError("Konsole bulunamadı.")
+    q = " ".join(shlex.quote(u) for u in units)
+    aug = shlex.quote(str(PROJECT_DIR / "bin" / "aug"))
+    script = RUNTIME_DIR / f"restart-{int(time.time())}.sh"
+    script.write_text(f"""#!/bin/bash
+echo "Yeniden başlatılacak servisler: {' '.join(units)}"
+sudo systemctl restart {q} && echo "Tamam." || echo "Bazı servisler yeniden başlatılamadı."
+systemctl --no-pager --lines=0 status {q} | grep -E '^(●|○|×)| Active:'
+{aug} check --quiet >/dev/null 2>&1 &
+read -rp "Pencereyi kapatmak için Enter'a bas. "
+""", encoding="utf-8")
+    script.chmod(0o700)
+    subprocess.Popen([terminal, "--separate", "--hide-menubar", "-e", "bash", str(script)],
+                     start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
+    return {"units": units}
+
+
+def _heads(item: dict) -> list[tuple[str, str, str]]:
+    out = [(item["pkgbase"], item["target"], item["name"])]
+    for d in deps.flatten(item.get("new_aur_deps", [])):
+        if d.get("pkgbase") and d.get("target"):
+            out.append((d["pkgbase"], d["target"], f"{d['name']} ({item['name']} bağımlılığı)"))
+    return out
+
+
 def _script(chosen: list[dict], report: dict) -> str:
     q = shlex.quote
     aur_checks = "\n".join(
-        f'check_head {q(i["pkgbase"])} {q(i["target"])} {q(i["name"])}' for i in chosen)
+        "check_head " + q(i["name"]) + " " + " ".join(f"{q(b)} {q(c)}" for b, c, _ in _heads(i))
+        for i in chosen)
     aug = q(str(PROJECT_DIR / "bin" / "aug"))
     return f"""#!/bin/bash
 # Güncelleme Bekçisi tarafından oluşturuldu: {time.strftime('%Y-%m-%d %H:%M:%S')}
@@ -117,14 +151,19 @@ finish() {{
 }}
 trap finish EXIT
 
+# check_head NAME BASE1 COMMIT1 [BASE2 COMMIT2 ...]: the package and every new
+# AUR dependency it pulls in must still be at the reviewed commit.
 check_head() {{
-  local base=$1 want=$2 name=$3 have
-  have=$(git ls-remote "https://aur.archlinux.org/$base.git" HEAD | cut -f1)
-  if [[ "$have" == "$want" ]]; then
-    AUR_PKGS+=("$name")
-  else
-    echo "  ! $name incelendikten sonra AUR'da değişti; ATLANIYOR."
-  fi
+  local name=$1 base want have; shift
+  while (( $# )); do
+    base=$1 want=$2; shift 2
+    have=$(git ls-remote "https://aur.archlinux.org/$base.git" HEAD | cut -f1)
+    if [[ "$have" != "$want" ]]; then
+      echo "  ! $base incelendikten sonra AUR'da değişti; $name ATLANIYOR."
+      return
+    fi
+  done
+  AUR_PKGS+=("$name")
 }}
 
 bold=$'\\e[1m'; dim=$'\\e[2m'; red=$'\\e[31m'; green=$'\\e[32m'; yellow=$'\\e[33m'; off=$'\\e[0m'

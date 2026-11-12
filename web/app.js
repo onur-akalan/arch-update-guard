@@ -140,7 +140,12 @@ function renderAlerts(d, r) {
   const unread = r.news.filter((n) => n.since_last_upgrade && !n.read);
   if (unread.length) out.push(alertBox("warn", "📰", "Son güncellemenden sonra Arch haberi yayımlandı",
     `Güncellemeden önce oku: <ul>${unread.map((n) => `<li><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a></li>`).join("")}</ul>`));
-  if (r.system.reboot_needed) out.push(alertBox("info", "↻", "Yeniden başlatma bekliyor", "Çalışan çekirdek güncellendi; değişikliklerin etkin olması için bilgisayarı yeniden başlat."));
+  const rt = r.runtime;
+  if (rt && rt.reboot_recommended) out.push(alertBox("info", "↻", "Bilgisayarı yeniden başlatman öneriliyor",
+    `${rt.kernel_updated ? "Çalışan çekirdek güncellendi. " : ""}${rt.reboot_packages.length ? `Açılıştan sonra güncellenen temel paketler: ${esc(rt.reboot_packages.join(", "))}. ` : ""}Ayrıntılar Sistem sekmesinde.`));
+  else if (rt && rt.services.some((s) => s.safe)) out.push(alertBox("info", "↻", `${rt.services.filter((s) => s.safe).length} servis eski kütüphaneyle çalışıyor`,
+    "Güncellemenin bu servislerde etkin olması için yeniden başlatılmaları gerekiyor. Sistem sekmesinden tek tıkla yapabilirsin."));
+  else if (r.system.reboot_needed) out.push(alertBox("info", "↻", "Yeniden başlatma bekliyor", "Çalışan çekirdek güncellendi; değişikliklerin etkin olması için bilgisayarı yeniden başlat."));
   if (d.check_error) out.push(alertBox("danger", "✕", "Son kontrol başarısız oldu", esc(d.check_error)));
   for (const e of r.errors) out.push(alertBox("warn", "⚠", "Kontrolün bir bölümü tamamlanamadı", esc(e)));
   const last = d.update?.last;
@@ -251,18 +256,7 @@ function renderPkg(a, reviewing, r) {
       <span class="ver">kurulu <b>${esc(a.installed)}</b></span><span class="badge ${cls}">${label}</span></div>
       <div class="pkg-body">${a.error ? `<div class="verdict">${esc(a.error)}</div>` : ""}${renderFindings(a.findings)}</div></article>`;
   }
-  const llm = a.llm;
-  let verdict;
-  if (!llm) verdict = `<div class="verdict">Yapay zekâ incelemesi kapalı. Diff'e kendin bakıp karar ver.</div>`;
-  else if (llm.status !== "ok") verdict = `<div class="verdict"><b>İnceleme yapılamadı:</b> ${esc(llm.error)}<div class="who">Bu paket incelenmemiş sayılır ve onayın olmadan kurulmaz.</div></div>`;
-  else {
-    const vmap = { clean: ["ok", "Temiz"], suspicious: ["warn", "Şüpheli"], malicious: ["danger", "Zararlı"] };
-    const [vc, vl] = vmap[llm.verdict];
-    const cost = llm.usage?.cost_usd != null ? ` · $${llm.usage.cost_usd.toFixed(3)}` : llm.usage?.input_tokens ? ` · ${llm.usage.input_tokens + llm.usage.output_tokens} token` : "";
-    verdict = `<div class="verdict"><span class="badge ${vc}">Yapay zekâ: ${vl}</span> ${esc(llm.summary)}
-      ${llm.findings?.length ? `<ul class="findings" style="margin-top:8px">${llm.findings.map((f) => findingRow(f.severity, f.explanation, f.file, f.excerpt)).join("")}</ul>` : ""}
-      <div class="who">${esc(llm.provider)} · ${esc(llm.model || "")} · ${llm.seconds ?? "?"} sn${cost} · ${fmtDate(llm.at)} · doğrulanmamış yorum</div></div>`;
-  }
+  const verdict = renderVerdict(a.llm);
   const holdBadge = a.held ? `<span class="badge neutral" title="${esc(fmtDate(a.hold_until))}">⏳ ${until(a.hold_until)} bekleme</span>` : "";
   const apprBadge = a.approved ? `<span class="badge accent">✓ Onaylandı</span>` : "";
   const dk = `diff:${keyOf(a)}`;
@@ -278,6 +272,7 @@ function renderPkg(a, reviewing, r) {
     <div class="pkg-body">
       ${verdict}
       ${renderFindings(a.findings)}
+      ${renderDeps(a.new_aur_deps, a.name)}
       <div class="meta-grid">
         <span>Bakımcı: <b>${esc(a.maintainer || "yok")}</b>${a.known_maintainer && a.known_maintainer !== a.maintainer ? ` (önceden ${esc(a.known_maintainer)})` : ""}</span>
         <span>Oy: <b>${a.votes ?? "?"}</b></span>
@@ -288,7 +283,7 @@ function renderPkg(a, reviewing, r) {
       <div class="pkg-actions">
         ${a.approved
           ? `<button class="btn sm" data-act="unapprove" data-name="${esc(a.name)}">Onayı kaldır</button>`
-          : `<button class="btn sm ${a.status === "clean" ? "" : "primary"}" data-act="approve" data-name="${esc(a.name)}" data-commit="${esc(a.target)}" data-status="${a.status}">
+          : `<button class="btn sm ${a.status === "clean" ? "" : "primary"}" data-act="approve" data-name="${esc(a.name)}" data-commit="${esc(a.approval_key || a.target)}" data-status="${a.status}">
               ${a.status === "clean" && a.held ? "Beklemeden onayla" : a.status === "clean" ? "Onayla" : "İnceledim, onayla"}</button>`}
         <button class="btn sm ghost" data-act="rereview" data-name="${esc(a.name)}" ${reviewing ? "disabled" : ""}>${reviewing ? "İnceleniyor…" : "Yeniden incelet"}</button>
         ${providers.length > 1 ? `<select class="input" style="height:28px" data-provider-for="${esc(a.name)}">${providers.map((p) =>
@@ -303,6 +298,52 @@ function renderPkg(a, reviewing, r) {
       </div>
     </details>
   </article>`;
+}
+
+function renderVerdict(llm) {
+  if (!llm) return `<div class="verdict">Yapay zekâ incelemesi kapalı. Diff'e kendin bakıp karar ver.</div>`;
+  if (llm.status !== "ok") return `<div class="verdict"><b>İnceleme yapılamadı:</b> ${esc(llm.error)}<div class="who">Bu paket incelenmemiş sayılır ve onayın olmadan kurulmaz.</div></div>`;
+  const vmap = { clean: ["ok", "Temiz"], suspicious: ["warn", "Şüpheli"], malicious: ["danger", "Zararlı"] };
+  const [vc, vl] = vmap[llm.verdict];
+  const cost = llm.usage?.cost_usd != null ? ` · $${llm.usage.cost_usd.toFixed(3)}` : llm.usage?.input_tokens ? ` · ${llm.usage.input_tokens + llm.usage.output_tokens} token` : "";
+  return `<div class="verdict"><span class="badge ${vc}">Yapay zekâ: ${vl}</span> ${esc(llm.summary)}
+    ${llm.findings?.length ? `<ul class="findings" style="margin-top:8px">${llm.findings.map((f) => findingRow(f.severity, f.explanation, f.file, f.excerpt)).join("")}</ul>` : ""}
+    <div class="who">${esc(llm.provider)} · ${esc(llm.model || "")} · ${llm.seconds ?? "?"} sn${cost} · ${fmtDate(llm.at)} · doğrulanmamış yorum</div></div>`;
+}
+
+function renderDeps(list, parent) {
+  if (!list || !list.length) return "";
+  return `<div class="deps"><h3>Bu güncellemenin getirdiği yeni AUR bağımlılıkları</h3>
+    <p class="help">Bunlar henüz kurulu değil; yay ana paketi kurarken bunları da derleyip kurar. Ana paketin onayı bu bağımlılıkların incelenen commit'lerini de kapsar.</p>
+    ${list.map((d) => renderDep(d, parent)).join("")}</div>`;
+}
+
+function renderDep(d, parent) {
+  const [cls, label] = STATUS[d.status] || ["neutral", d.status];
+  if (!d.target) {
+    return `<div class="dep ${d.status}"><div class="pkg-head"><span class="pkg-name">${esc(d.name)}</span><span class="badge ${cls}">${label}</span></div>
+      <div class="verdict">${esc(d.error || "")}</div></div>`;
+  }
+  const dk = `dep:${parent}:${d.name}@${d.target}`;
+  return `<div class="dep ${d.status}">
+    <div class="pkg-head">
+      <span class="pkg-name">${esc(d.name)}</span><span class="ver">yeni · <b>${esc(d.version)}</b> · ${esc(d.required_by)} tarafından isteniyor</span>
+      <span class="badge ${cls}">${label}</span><span class="spacer"></span>
+      <a class="small" href="${esc(d.aur_url)}" target="_blank" rel="noopener">AUR sayfası ↗</a>
+    </div>
+    ${renderVerdict(d.llm)}
+    ${renderFindings(d.findings)}
+    <div class="meta-grid">
+      <span>Bakımcı: <b>${esc(d.maintainer || "yok")}</b></span><span>Oy: <b>${d.votes ?? "?"}</b></span>
+      <span>AUR'a ilk ekleniş: <b>${fmtDay(d.first_submitted)}</b></span><span>Bu sürüm: <b>${fmtDate(d.last_modified)}</b></span>
+      ${d.repo_deps?.length ? `<span>Resmi depodan da kurulacak: <b>${d.repo_deps.map(esc).join(", ")}</b></span>` : ""}
+    </div>
+    <details class="more" data-key="${esc(dk)}" ${ui.openDetails.has(dk) ? "open" : ""}>
+      <summary>Paketin tamamını göster (${d.diff.chars.toLocaleString("tr-TR")} karakter)</summary>
+      <div class="more-body">${ui.openDetails.has(dk) ? renderDiff(d.diff.text) : ""}</div>
+    </details>
+    ${renderDeps(d.deps, parent)}
+  </div>`;
 }
 
 function renderFindings(findings) {
@@ -344,13 +385,24 @@ function renderRepo(r) {
 
 function renderVulns(r) {
   if (!r.vulns.length) return `<div class="empty">Kurulu sürümleri etkileyen kayıtlı bir güvenlik açığı yok.</div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>Önem</th><th>Paket</th><th>Kurulu</th><th>Düzeltme</th><th>Tür</th><th>Kayıt</th></tr></thead><tbody>
+  const usedBy = (v) => {
+    const parts = [];
+    if (v.services?.length) parts.push(`<div class="tags">${v.services.map((s) => `<span class="badge warn" title="Çalışan bir sistem servisi bu kütüphaneyi yüklüyor">⚙ ${esc(s.replace(/\.service$/, ""))}</span>`).join("")}</div>`);
+    if (v.explicit) parts.push(`<span class="small">senin kurduğun paket</span>`);
+    if (v.used_by?.length) {
+      const shown = v.used_by.slice(0, 5).map(esc).join(", ");
+      parts.push(`<span class="small muted" title="${esc(v.used_by.join(", "))}">${shown}${v.used_by.length > 5 ? ` +${v.used_by.length - 5}` : ""}</span>`);
+    }
+    return parts.join("") || `<span class="muted small">—</span>`;
+  };
+  return `<div class="table-wrap"><table><thead><tr><th>Önem</th><th>Paket</th><th>Etkilediği</th><th>Düzeltme</th><th>Kayıt</th></tr></thead><tbody>
     ${r.vulns.map((v) => `<tr><td><span class="badge ${AVG_SEV[v.severity] || "neutral"}">${AVG_SEV_TR[v.severity] || esc(v.severity)}</span></td>
-      <td><b>${esc(v.package)}</b></td><td class="mono">${esc(v.installed)}</td>
+      <td><b>${esc(v.package)}</b><div class="mono muted small">${esc(v.installed)}</div></td>
+      <td style="max-width:380px">${usedBy(v)}</td>
       <td>${v.fix_pending ? `<span class="badge ok">güncellemede: ${esc(v.fixed)}</span>` : v.fixed ? `<span class="mono">${esc(v.fixed)}</span>` : `<span class="muted">henüz yok</span>`}</td>
-      <td class="muted">${esc(v.type)}</td>
-      <td><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.avg)}</a> <span class="muted small">${v.issue_count} CVE</span></td></tr>`).join("")}
+      <td><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.avg)}</a><div class="muted small">${v.issue_count} CVE · ${esc(v.type)}</div></td></tr>`).join("")}
     </tbody></table></div>
+    <p class="note">Sıralama: önem derecesi, açıklı kütüphaneyi çalışan bir servisin yüklemesi (⚙), düzeltmenin bekleyen güncellemede olması ve etkilenen uygulama sayısı. "Etkilediği" sütunu, senin kurduğun ve bu paketi doğrudan ya da dolaylı kullanan programları gösterir.</p>
     <p class="note">Kaynak: Arch Linux güvenlik takipçisi (security.archlinux.org). Takipçi gönüllülerce tutulur ve eksik ya da gecikmeli olabilir; "henüz yok" yazan açıklar için yapılacak bir şey yoksa Arch'ın düzeltmeyi yayımlamasını beklemek gerekir.</p>`;
 }
 
@@ -366,9 +418,49 @@ function renderNews(r) {
     </article>`).join("")}</div>`;
 }
 
+function renderRuntime(r) {
+  const rt = r.runtime;
+  if (!rt) return "";
+  const safe = rt.services.filter((s) => s.safe);
+  const unsafe = rt.services.filter((s) => !s.safe);
+  const parts = [`<h3>Yeniden başlatma</h3>`];
+  if (!rt.services.length && !rt.user_processes.length && !rt.reboot_recommended) {
+    parts.push(`<p class="muted">Gerek yok: çalışan her şey diskteki güncel kütüphaneleri kullanıyor (son açılış ${fmtDate(rt.boot_time)}).</p>`);
+  } else {
+    parts.push(`<p class="note">Güncellenen bir kütüphane, onu yüklemiş programlar yeniden başlatılana kadar bellekte eski (açıklı) haliyle çalışmaya devam eder.</p>`);
+    if (rt.reboot_recommended) {
+      const why = [rt.kernel_updated && "çekirdek güncellendi", rt.reboot_packages.length && `${rt.reboot_packages.join(", ")} açılıştan sonra güncellendi`,
+        unsafe.length && "oturumu yöneten servisler etkilendi", rt.user_processes.some((u) => u.session) && "masaüstü oturumu eski kütüphaneleri kullanıyor"].filter(Boolean);
+      parts.push(`<div class="alert warn"><span class="alert-icon">↻</span><div><b>Bilgisayarı yeniden başlatman öneriliyor</b><div class="small">${esc(why.join("; "))}.</div></div></div>`);
+    }
+    if (safe.length) {
+      parts.push(`<div class="table-wrap"><table><thead><tr><th>Servis</th><th>Başlama</th><th>Sonradan güncellenen paketler</th></tr></thead><tbody>
+        ${safe.map((s) => `<tr><td><b>${esc(s.unit)}</b></td><td class="mono">${fmtDate(s.started)}</td><td>${s.packages.map(esc).join(", ")}</td></tr>`).join("")}
+        </tbody></table></div>
+        <div class="toolbar" style="margin-top:8px"><button class="btn sm primary" data-act="restart">Bu ${safe.length} servisi yeniden başlat</button>
+        <code class="small muted">sudo systemctl restart ${safe.map((s) => esc(s.unit)).join(" ")}</code></div>`);
+    }
+    if (unsafe.length) parts.push(`<p class="small">Yeniden başlatılırsa oturumu kapatacak servisler (bunun yerine bilgisayarı yeniden başlat): <b>${unsafe.map((s) => esc(s.unit)).join(", ")}</b></p>`);
+    if (rt.user_processes.length) {
+      parts.push(`<p class="small" style="margin-bottom:4px">Eski kütüphaneyi hâlâ kullanan uygulamaların (kapatıp yeniden aç):</p>
+        <div class="tags">${rt.user_processes.map((u) => `<span class="badge ${u.session ? "warn" : "neutral"}" title="${esc(u.files.join("\n"))}">${esc(u.name)}${u.count > 1 ? ` ×${u.count}` : ""}</span>`).join("")}</div>`);
+    }
+  }
+  const pub = rt.open_ports.filter((p) => p.public);
+  parts.push(`<h3 style="margin-top:20px">Ağa açık portlar</h3>
+    <p class="note">Yalnızca bu bilgisayarın dışından erişilebilecek adreslerde dinleyenler listelenir. "Tüm ağ" yazanlara bağlı olduğun ağdaki herkes ulaşabilir. Docker'ın yayımladığı portlar ufw kurallarını atlar.</p>
+    ${rt.open_ports.length ? `<div class="table-wrap"><table><thead><tr><th>Port</th><th>Ne</th><th>Adres</th></tr></thead><tbody>
+      ${rt.open_ports.map((p) => `<tr><td class="mono">${p.port}/${esc(p.proto)}</td>
+        <td>${p.container ? `<span class="badge ${p.public ? "danger" : "neutral"}">Docker: ${esc(p.container)}</span> ${esc(p.service || "")}` : esc(p.service || p.process || "bilinmiyor (root süreci)")}</td>
+        <td>${p.public ? `<span class="badge warn">tüm ağ</span>` : `<span class="mono small">${esc(p.address)}</span>`}</td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="muted">Yok.</p>`}
+    ${pub.some((p) => p.container) ? `<p class="small">Docker kapsayıcısını yalnızca bu bilgisayardan erişilebilir yapmak için compose dosyasında portu <code>"127.0.0.1:PORT:PORT"</code> biçiminde yaz.</p>` : ""}`);
+  return parts.join("");
+}
+
 function renderSystem(r) {
   const s = r.system;
-  return `<dl class="kv">
+  return `${renderRuntime(r)}<h3 style="margin-top:20px">Genel</h3><dl class="kv" style="margin-top:8px">
       <dt>Son tam güncelleme</dt><dd>${s.last_upgrade ? fmtDate(s.last_upgrade) : "bulunamadı"}</dd>
       <dt>Kurulu paket</dt><dd>${s.installed_count} (${s.foreign_count} AUR / depo dışı)</dd>
       <dt>Boş disk alanı</dt><dd>${s.disk_free_gb} GB</dd>
@@ -402,6 +494,7 @@ document.addEventListener("click", async (ev) => {
     else if (act === "unapprove") { await api("/api/unapprove", { name: t.dataset.name }); toast("Onay kaldırıldı"); await refresh(); }
     else if (act === "rereview") await rereview(t.dataset.name);
     else if (act === "update") await startUpdate();
+    else if (act === "restart") await restartServices();
   } catch (e) {
     toast(e.message, true);
   }
@@ -502,6 +595,15 @@ async function startUpdate() {
   const res = await api("/api/update", { aur, news_ack: ui.newsAck });
   toast(`Güncelleme Konsole'da başladı${res.aur.length ? ` (AUR: ${res.aur.join(", ")})` : ""}`);
   await refresh();
+}
+
+async function restartServices() {
+  const units = ui.data.report.runtime.services.filter((s) => s.safe).map((s) => s.unit);
+  const ok = await confirmDialog("Servisler yeniden başlatılsın mı?",
+    `<p style="margin:0"><b>${units.map(esc).join(", ")}</b></p><p class="help">Konsole'da <code>sudo systemctl restart</code> çalışır. Ağ servisleri birkaç saniyeliğine kesilebilir.</p>`);
+  if (!ok) return;
+  await api("/api/restart", { units });
+  toast("Konsole'da başlatıldı");
 }
 
 // ---------- settings ----------
