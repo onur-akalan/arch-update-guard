@@ -49,6 +49,8 @@ You receive the git diff of an AUR package repository (PKGBUILD, .SRCINFO, insta
 
 You may also receive an inspection of the downloaded source files (tarballs, .deb, AppImage, single files) the new PKGBUILD fetches: which files were added, removed or changed compared with the installed version's sources, files that land in autostart / systemd / cron / pacman-hook locations, and diffs of install hooks, build scripts and executable scripts inside them. Judge whether those changes fit an ordinary upstream release. Note that makepkg does not run a .deb's maintainer scripts (preinst/postinst) unless the PKGBUILD copies or calls them.
 
+When an uploaded release tarball was compared with the upstream git tag, files that differ from git or exist only in the tarball deserve attention: the xz backdoor (CVE-2024-3094) existed only in the release tarball, as a modified m4/build-to-host.m4 that extracted a payload from binary "test" files with grep -a, tr character swaps, head/tail byte slicing and xz decompression, and ran it with eval. Autotools/gettext output (configure, Makefile.in, aclocal.m4, build-aux/, m4/ copies) normally exists only in tarballs; judge those by their content and diffs, not by their presence.
+
 Decide whether the change is safe to build and install:
 - "clean": routine maintenance (version bump, checksum update, dependency or packaging fixes) with nothing that would harm the user.
 - "suspicious": something a careful human should look at before installing (unexplained new download hosts, disabled checksums, obfuscation, network access during build, changes to install scripts, privilege changes, an unexpected maintainer/committer, behaviour that does not match the package's purpose).

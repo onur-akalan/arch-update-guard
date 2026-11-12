@@ -47,6 +47,7 @@ DEFAULT_SETTINGS: dict = {
         "max_file_mb": 400,  # larger downloads are skipped (reported, not inspected)
         "baseline": True,    # first time: also fetch the installed version's sources to compare
         "time_budget_minutes": 15,  # download time per check; the rest resumes on the next check
+        "tag_compare": True,        # compare uploaded release tarballs with the upstream git tag
         "background_rate_mb": 3,    # MB/s cap for downloads in scheduled checks (0 = no cap)
     },
     "review": {
@@ -168,6 +169,7 @@ def validate_settings(s: dict) -> dict:
     src = s["sources"]
     src["enabled"] = bool(src["enabled"])
     src["baseline"] = bool(src["baseline"])
+    src["tag_compare"] = bool(src["tag_compare"])
     try:
         src["max_file_mb"] = int(src["max_file_mb"])
     except (TypeError, ValueError):

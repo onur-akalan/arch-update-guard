@@ -49,7 +49,27 @@ LINE_RULES: list[tuple[str, str, str, re.Pattern]] = [
      re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")),
     (MEDIUM, "ld-preload", "LD_PRELOAD kullanımı",
      re.compile(r"\bLD_PRELOAD=")),
+    # Patterns from the xz backdoor (CVE-2024-3094): the build script pulled a payload
+    # out of "test" files with grep -a, tr character swaps, byte slicing with head/tail
+    # and decompression, then ran it with eval / sh.
+    (HIGH, "decompress-exec", "Sıkıştırılmış veri çözülüp doğrudan kabukta/eval ile çalıştırılıyor",
+     re.compile(r"\b(xz|unxz|xzcat|lzma|unlzma|lzcat|gunzip|zcat|bzcat|bunzip2|zstd|unzstd|zstdcat)\b"
+                r"[^#\n]*\|\s*(eval\b|(/bin/)?(ba|da|z)?sh\b)")),
+    (HIGH, "byte-slice-exec", "Bir dosyanın bayt aralığı kesilip çalıştırılıyor",
+     re.compile(r"\b(head|tail)\s+(-\w+\s+)*-c\s*\+?\d+[^#\n]*\|\s*(eval\b|(/bin/)?(ba|da|z)?sh\b)"
+                r"|\bdd\b[^#\n]*\b(skip|count)=[^#\n]*\|\s*(eval\b|(/bin/)?(ba|da|z)?sh\b)")),
+    (HIGH, "tr-swap", "tr ile boşluk/sekme/tire karakterleri yer değiştiriliyor (xz arka kapısındaki gizleme)",
+     re.compile(r"\btr\s+[\"'][^\"']*(\\t|\\-)[^\"']*[\"']\s+[\"'][^\"']*(\\t|\\-)[^\"']*[\"']")),
+    (MEDIUM, "binary-grep", "Derleme betiği ikili dosyaların içinde metin arıyor (grep -a)",
+     re.compile(r"\bgrep\s+(-\w+\s+)*-\w*a\w*[lrRE]\w*|\bgrep\s+(-\w+\s+)*-\w*[lrRE]\w*a\w*")),
+    (MEDIUM, "eval-pipeline", "Bir komut zincirinin çıktısı eval ile çalıştırılıyor",
+     re.compile(r"\beval\s+[\"']?\$\(?[^)\n]*\|[^#\n]*\b(sed|tr|head|tail|xz|gzip|awk)\b|\|\s*eval\s")),
 ]
+
+# Rules specific enough to run on every build script inside a source archive
+# (upstream build systems use curl, base64 and the like legitimately, so the
+# generic medium rules are not applied there).
+BUILD_SAFE = {"decompress-exec", "byte-slice-exec", "tr-swap", "binary-grep", "eval-pipeline"}
 
 CODE_FILE = re.compile(r"(^|/)(PKGBUILD|[^/]+\.(install|sh|bash|py|hook|service|desktop))$")
 

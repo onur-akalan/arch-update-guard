@@ -328,6 +328,12 @@ function renderSourcesLine(src) {
     const t = sm.reduce((acc, x) => ({ a: acc.a + (x.added || 0), r: acc.r + (x.removed || 0), c: acc.c + (x.changed || 0) }), { a: 0, r: 0, c: 0 });
     parts.push(`kurulu sürüme göre ${t.a} dosya eklendi, ${t.r} silindi, ${t.c} değişti`);
   } else if (ok.length) parts.push("karşılaştırılacak eski sürüm yok, yalnızca içerik tarandı");
+  for (const t of src.tag_compare || []) {
+    if (t.status === "ok") parts.push(t.modified.length || t.only_tar.length
+      ? `<b class="warn-text">sürüm arşivi git etiketinden farklı (${t.modified.length} değişik, ${t.only_tar.length} fazla dosya)</b>`
+      : `sürüm arşivi git etiketiyle (${esc(t.tag)}) uyumlu`);
+    else if (t.status === "git-archive") parts.push("arşiv doğrudan git'ten üretilmiş");
+  }
   return `<div class="srcline small">📦 ${parts.join(" · ")}</div>`;
 }
 
@@ -349,6 +355,21 @@ function renderSources(src, dk) {
       }
       if (sm.notable.length) detail += `<div class="small"><span class="muted">Sisteme yerleşen dosyalar:</span> ${sm.notable.map((n) => `<code>${esc(n.path)}</code> <span class="muted">(${CAT_TR[n.cat] || n.cat})</span>`).join(" ")}</div>`;
       if (open && sm.diffs.length) detail += sm.diffs.map((d) => `<div class="small"><b>${esc(d.path)}</b> <span class="muted">(${CAT_TR[d.cat] || d.cat || "metin"})</span></div>${renderDiff(d.diff)}`).join("");
+    }
+    const tc = (src.tag_compare || []).find((t) => t.file === s.file);
+    if (tc) {
+      const TC = { "git-archive": "Arşiv, git deposundan doğrudan üretilmiş; git etiketiyle aynı içerik.",
+        "no-repo": "Kaynağın git deposu bilinmiyor; git etiketiyle karşılaştırılamadı.",
+        "no-tag": `Git deposunda (${esc(tc.repo || "")}) bu sürüme uyan etiket bulunamadı.`,
+        deferred: "Git etiketiyle karşılaştırma sonraki kontrolde tamamlanacak.",
+        failed: `Git etiketiyle karşılaştırılamadı: ${esc(tc.error || "")}` };
+      if (tc.status === "ok") {
+        const list = (label, arr) => arr.length ? `<div class="small"><span class="muted">${label}:</span> ${arr.slice(0, 40).map((p) => `<code>${esc(p)}</code>`).join(" ")}${arr.length > 40 ? " …" : ""}</div>` : "";
+        detail += `<div class="small"><b>Git etiketiyle karşılaştırma</b> (<a href="${esc(tc.repo)}" target="_blank" rel="noopener">${esc(tc.repo)}</a> @ <code>${esc(tc.tag)}</code>): ${tc.modified.length} dosya git'tekinden farklı, ${tc.only_tar.length} beklenmeyen dosya yalnızca arşivde, ${tc.only_tar_expected.length} dosya autotools/gettext çıktısı olarak yalnızca arşivde (normal).</div>`
+          + list("Git'tekinden farklı", tc.modified) + list("Yalnızca arşivde", tc.only_tar)
+          + (open ? `<details class="small"><summary class="muted">Autotools/gettext çıktısı olarak yalnızca arşivde olanlar (${tc.only_tar_expected.length})</summary>${tc.only_tar_expected.map((p) => `<code>${esc(p)}</code>`).join(" ")}</details>` : "")
+          + (open ? tc.diffs.map((d) => `<div class="small"><b>${esc(d.path)}</b> <span class="muted">(git → sürüm arşivi)</span></div>${renderDiff(d.diff)}`).join("") : "");
+      } else detail += `<div class="small muted">${TC[tc.status] || tc.status}</div>`;
     }
     return `<div class="srcfile"><div><b>${esc(s.file)}</b> <span class="muted small">${esc(SRC_STATUS[s.status] || s.status)}${s.error ? `: ${esc(s.error)}` : ""}</span> ${ver}</div>
       <div class="muted small url">${esc(s.url)}</div>${detail}</div>`;
@@ -837,6 +858,7 @@ function renderSettings() {
     <fieldset><legend>Kaynak inceleme</legend>
       <label class="check"><input type="checkbox" name="src_enabled" ${s.sources.enabled ? "checked" : ""}> AUR güncellemelerinin indirdiği dosyaları (tarball, .deb, AppImage…) kurulmadan önce indirip içini incele</label>
       <label class="check"><input type="checkbox" name="src_baseline" ${s.sources.baseline ? "checked" : ""}> Bir paket için ilk kez: kurulu sürümün kaynaklarını da indirip karşılaştır</label>
+      <label class="check"><input type="checkbox" name="src_tag" ${s.sources.tag_compare ? "checked" : ""}> Yüklenmiş sürüm arşivlerini (tarball) projenin git etiketiyle karşılaştır (xz tarzı saldırılara karşı)</label>
       <div class="field-row">
         <label class="field"><span>En büyük dosya (MB)</span><input class="input" type="number" min="1" max="4096" name="src_max_file_mb" value="${s.sources.max_file_mb}"></label>
         <label class="field"><span>Kontrol başına indirme süresi (dakika)</span><input class="input" type="number" min="1" max="240" name="src_time_budget" value="${s.sources.time_budget_minutes}"></label>
@@ -904,7 +926,7 @@ function collectSettings() {
   s.review.max_diff_chars = Number(f.max_diff_chars.value);
   s.review.timeout_seconds = Number(f.timeout_seconds.value);
   s.security = { auto_analyze: f.auto_analyze.checked, nvd_budget_seconds: Number(f.nvd_budget_seconds.value) };
-  s.sources = { enabled: f.src_enabled.checked, baseline: f.src_baseline.checked,
+  s.sources = { enabled: f.src_enabled.checked, baseline: f.src_baseline.checked, tag_compare: f.src_tag.checked,
                 max_file_mb: Number(f.src_max_file_mb.value), time_budget_minutes: Number(f.src_time_budget.value),
                 background_rate_mb: Number(f.src_rate.value) };
   s.providers = [...document.querySelectorAll("#providers .provider")].map((el) => {

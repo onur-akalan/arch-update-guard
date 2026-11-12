@@ -45,8 +45,9 @@ MANIFEST_DIR = DATA_DIR / "sources"
 DL_DIR = CACHE_DIR / "sources"
 ALGOS = ("b2", "sha512", "sha384", "sha256", "sha224", "sha1", "md5")
 VCS = ("git", "svn", "hg", "bzr", "fossil")
-TEXT_MAX = 256 * 1024          # keep the text of one notable file up to this size
-TEXT_BUDGET = 4 * 1024 * 1024  # all kept text per source file
+TEXT_MAX = 256 * 1024          # keep the text of one notable file up to this size...
+BUILD_TEXT_MAX = 3 * 1024 * 1024  # ...or this for build machinery (a generated configure is big)
+TEXT_BUDGET = 24 * 1024 * 1024    # all kept text per source file
 HASH_BUDGET = 6 * 1024 ** 3    # stop hashing members after this many bytes (archive bombs)
 MAX_MEMBERS = 300_000
 FORMAT_VERSION = 1
@@ -70,6 +71,11 @@ BUILD_NAMES = re.compile(
     r"^(Makefile|GNUmakefile|makefile|configure|configure\.ac|setup\.py|pyproject\.toml|build\.rs|Cargo\.toml"
     r"|CMakeLists\.txt|meson\.build|package\.json|build\.gradle(\.kts)?|build\.sh|install\.sh|bootstrap"
     r"|autogen\.sh|Rakefile|build\.zig|go\.mod|\.npmrc|\.yarnrc(\.yml)?)$")
+# Build machinery anywhere in the tree: this is where the xz backdoor's trigger hid
+# (m4/build-to-host.m4, a file nobody reads because autotools generates such files).
+BUILD_ANY_DEPTH = re.compile(
+    r"(\.m4|\.cmake|/configure\.(ac|in)|/Makefile\.(am|in)|/CMakeLists\.txt|/meson\.build|/meson(_options)?\.(txt|options)"
+    r"|/build\.rs|/SConstruct|/SConscript|/Kbuild|/wscript)$")
 DEB_SCRIPTS = {"preinst", "postinst", "prerm", "postrm", "config", "triggers"}
 AI_MAGIC = (b"AI\x01", b"AI\x02")
 
@@ -82,7 +88,9 @@ def category(path: str) -> str | None:
     if SYSTEM.search(path):
         return "system"
     parts = path.split("/")
-    if len(parts) <= 3 and (BUILD_NAMES.match(parts[-1]) or parts[-1].endswith(".sh")):
+    if len(parts) <= 3 and (BUILD_NAMES.match(parts[-1]) or parts[-1].endswith(".sh") or parts[-1] == "aclocal.m4"):
+        return "build"
+    if BUILD_ANY_DEPTH.search("/" + path):
         return "build"
     return None
 
@@ -258,9 +266,12 @@ class _Builder:
         if kind == "f" and reader is not None:
             want_all = self.hashed < HASH_BUDGET
             if want_all or cat:
-                data_head, digest, text = self._read(reader, size, keep=True)
+                data_head, digest, text = self._read(reader, size,
+                                                     BUILD_TEXT_MAX if cat == "build" else TEXT_MAX)
                 rec["sha"] = digest
                 rec["elf"] = data_head.startswith(b"\x7fELF")
+                if data_head and not rec["elf"] and not _is_text(data_head):
+                    rec["bin"] = True  # opaque data: images, compressed "test files"...
                 is_script = data_head.startswith(b"#!") and _is_text(data_head)
                 if not cat and is_script and mode & 0o111:
                     cat = "script"
@@ -271,13 +282,13 @@ class _Builder:
             rec["cat"] = cat
         self.m["members"][path] = rec
 
-    def _read(self, reader, size: int, keep: bool):
+    def _read(self, reader, size: int, limit: int):
         f = reader()
         if f is None:
             return b"", None, None
         h = hashlib.sha256()
         head = b""
-        buf = io.BytesIO() if keep and size <= TEXT_MAX else None
+        buf = io.BytesIO() if size <= limit else None
         while chunk := f.read(1024 * 1024):
             if not head:
                 head = chunk[:8192]
@@ -285,7 +296,7 @@ class _Builder:
             self.hashed += len(chunk)
             if buf is not None:
                 buf.write(chunk)
-                if buf.tell() > TEXT_MAX:
+                if buf.tell() > limit:
                     buf = None
         text = None
         if buf is not None and _is_text(buf.getvalue()):
@@ -563,6 +574,172 @@ def prune_downloads(pkgbase: str, keep_names: set[str]) -> None:
             p.unlink(missing_ok=True)
 
 
+# --- release tarball vs. the upstream git tag ------------------------------------
+# The xz backdoor existed only in the release tarball, never in git. A tarball
+# that a maintainer uploads (as opposed to one the forge generates from git)
+# can contain anything, so it is compared with the forge's archive of the same
+# tag. Autotools/gettext output legitimately exists only in tarballs; those
+# files are listed separately and still scanned, everything else is flagged.
+
+GH_RELEASE = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/")
+GIT_GENERATED = re.compile(r"^https?://(github\.com/[^/]+/[^/]+/archive/|codeload\.github\.com/|[^/]+/.+/-/archive/"
+                           r"|codeberg\.org/[^/]+/[^/]+/archive/)")
+GH_REPO = re.compile(r"^https?://github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?(?:[/#?].*)?$")
+GL_REPO = re.compile(r"^https?://(gitlab\.[\w.-]+|codeberg\.org|salsa\.debian\.org|invent\.kde\.org)/([\w./-]+?)"
+                     r"(?:\.git)?/?$")
+TARBALL_ONLY_OK = re.compile(
+    r"(^|/)(configure|aclocal\.m4|config\.h\.in~?|Makefile\.in|GNUmakefile|ltmain\.sh|libtool|compile|depcomp"
+    r"|install-sh|missing|config\.(guess|sub|rpath)|ar-lib|test-driver|ylwrap|mkinstalldirs|py-compile|ABOUT-NLS"
+    r"|INSTALL|ChangeLog|\.tarball-version|\.version|\.prev-version|stamp-[\w.-]+|[\w.-]+\.gmo|[\w.-]+\.pot"
+    r"|[\w.-]+\.info(-\d+)?|Makefile\.in\.in|Rules-quot|[\w.@-]+\.(sed|sin|header)|PKG-INFO|setup\.cfg"
+    r"|[\w.-]+\.egg-info/.+|MANIFEST)$"
+    r"|(^|/)(build-aux|m4|gnulib-m4|autom4te\.cache|intl|vendor)/"
+    r"|\.(1|3|5|7|8|html|pdf|ps|dvi)$")
+TESTISH = re.compile(r"(^|/)(tests?|testdata|testsuite|test-?files|fixtures?|t|corpus)/")
+# Hand-maintained build machinery. A regenerated `configure` / `aclocal.m4` changes in
+# every autotools release, so those alone do not count; m4/*.m4 (where the xz trigger
+# hid) only changes when the maintainer touches the build system.
+MACHINERY = re.compile(r"((^|/)m4/[^/]+\.m4|(^|/)configure\.(ac|in)|\.cmake|(^|/)CMakeLists\.txt|(^|/)meson\.build"
+                       r"|(^|/)build\.rs)$")
+
+
+def _ls_tags(repo_url: str) -> set[str]:
+    from .aur import GIT  # hardened git
+    r = subprocess.run([*GIT, "ls-remote", "--tags", "--refs", repo_url], capture_output=True, text=True,
+                       timeout=60, env={"LC_ALL": "C.UTF-8", "PATH": "/usr/bin", "GIT_TERMINAL_PROMPT": "0"})
+    if r.returncode != 0:
+        return set()
+    return {line.split("refs/tags/", 1)[1] for line in r.stdout.splitlines() if "refs/tags/" in line}
+
+
+def git_origin(url: str, homepage: str, pkgver: str, names: list[str]) -> dict:
+    """Where the git version of this source lives: {status, archive_url?, repo?, tag?}."""
+    if GIT_GENERATED.match(url):
+        return {"status": "git-archive"}  # the forge built it from git: nothing to compare
+    m = GH_RELEASE.match(url)
+    if m:
+        o, r, tag = m.group(1), m.group(2), urllib.parse.unquote(m.group(3))
+        return {"status": "found", "repo": f"https://github.com/{o}/{r}", "tag": tag,
+                "archive_url": f"https://codeload.github.com/{o}/{r}/tar.gz/refs/tags/{urllib.parse.quote(tag)}"}
+    for i, cand in enumerate((url, homepage or "")):
+        gh, gl = GH_REPO.match(cand), GL_REPO.match(cand)
+        if gh:
+            host, path, kind = "github.com", f"{gh.group(1)}/{gh.group(2)}", "github"
+        elif gl and i == 1:  # a GitLab-style homepage; download URLs there are not repo URLs
+            host, path, kind = gl.group(1), gl.group(2).strip("/"), "gitlab"
+        else:
+            continue
+        repo = f"https://{host}/{path}"
+        tags = _ls_tags(repo + ".git")
+        if not tags:
+            return {"status": "no-tag", "repo": repo}
+        base = path.rsplit("/", 1)[-1]
+        variants = [pkgver, f"v{pkgver}", pkgver.replace(".", "_"), f"v{pkgver.replace('.', '_')}",
+                    f"release-{pkgver}", f"release_{pkgver.replace('.', '_')}"]
+        variants += [f"{n}-{pkgver}" for n in dict.fromkeys([base, *names])]
+        variants += [f"{n}_{pkgver}" for n in dict.fromkeys([base, *names])]
+        tag = next((v for v in variants if v in tags), None)
+        if not tag:
+            return {"status": "no-tag", "repo": repo}
+        q = urllib.parse.quote(tag)
+        if kind == "github":
+            archive = f"https://codeload.github.com/{path}/tar.gz/refs/tags/{q}"
+        elif host == "codeberg.org":
+            archive = f"https://codeberg.org/{path}/archive/{q}.tar.gz"
+        else:
+            archive = f"https://{host}/{path}/-/archive/{q}/{base}-{q}.tar.gz"
+        return {"status": "found", "repo": repo, "tag": tag, "archive_url": archive}
+    return {"status": "no-repo"}
+
+
+def compare_with_git(tar_m: dict, git_m: dict) -> dict:
+    t, g = tar_m["members"], git_m["members"]
+    only_tar = sorted(p for p, r in t.items() if p not in g and r["type"] == "f")
+    modified = sorted(p for p, r in t.items() if p in g and r.get("sha") and g[p].get("sha")
+                      and r["sha"] != g[p]["sha"] and not TARBALL_ONLY_OK.search(p))
+    expected = [p for p in only_tar if TARBALL_ONLY_OK.search(p)]
+    unexpected = [p for p in only_tar if not TARBALL_ONLY_OK.search(p)]
+    diffs, budget = [], 30000
+    for p in modified:
+        a, b = git_m["texts"].get(p), tar_m["texts"].get(p)
+        if a is None or b is None or budget <= 0:
+            continue
+        body = "\n".join(difflib.unified_diff(a.splitlines(), b.splitlines(), f"git/{p}", f"tarball/{p}",
+                                              lineterm="", n=3))[:min(budget, 8000)]
+        budget -= len(body)
+        diffs.append({"path": p, "diff": body})
+    return {"only_tar": unexpected, "only_tar_expected": expected, "modified": modified,
+            "only_git": sum(1 for p, r in g.items() if p not in t and r["type"] == "f"), "diffs": diffs}
+
+
+def tag_compare(pkgbase: str, new: dict, srcinfo: dict, names: list[str], max_file_mb: int) -> list[dict]:
+    """Compare each uploaded release archive of the new commit with its git tag."""
+    out = []
+    for s in new["sources"]:
+        m = s.get("manifest") or {}
+        if s.get("status") != "ok" or m.get("format") not in ("tar", "zip"):
+            continue
+        rec = {"file": s["file"]}
+        try:
+            origin = git_origin(s["url"], srcinfo.get("url", ""), srcinfo.get("pkgver", ""), names)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            origin = {"status": "failed", "error": str(e)[:200]}
+        rec.update({k: v for k, v in origin.items() if k != "archive_url"})
+        if origin["status"] == "found":
+            work = DL_DIR / pkgbase / ".tagcmp"
+            work.mkdir(parents=True, exist_ok=True)
+            dest = work / "git.tar.gz"
+            try:
+                download(origin["archive_url"], dest, max_file_mb * 1024 * 1024)
+                git_m = inspect(dest, "git.tar.gz")
+                if git_m["format"] == "unreadable":
+                    raise ValueError("git arşivi açılamadı")
+                rec.update(compare_with_git(m, git_m))
+                rec["status"] = "ok"
+                shutil.rmtree(work, ignore_errors=True)
+            except Deferred:
+                rec["status"] = "deferred"
+            except (TooLarge, urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+                rec["status"] = "failed"
+                rec["error"] = str(e)[:200]
+                shutil.rmtree(work, ignore_errors=True)
+        out.append(rec)
+    return out
+
+
+def tag_findings(tc: list[dict], new: dict) -> list[dict]:
+    F, out = rules._f, []
+    by_file = {s["file"]: (s.get("manifest") or {}) for s in new["sources"]}
+    for r in tc:
+        if r["status"] == "deferred":
+            out.append(F(rules.INFO, "tag-compare-deferred", "Git etiketiyle karşılaştırma sonraki kontrolde tamamlanacak",
+                         file=r["file"]))
+        elif r["status"] == "failed":
+            out.append(F(rules.INFO, "tag-compare-failed", "Sürüm arşivi git etiketiyle karşılaştırılamadı",
+                         r.get("error", ""), file=r["file"]))
+        if r["status"] != "ok":
+            continue
+        members = by_file.get(r["file"], {}).get("members", {})
+        bins = [p for p in r["only_tar"] if members.get(p, {}).get("elf") or members.get(p, {}).get("bin")]
+        texts = [p for p in r["only_tar"] if p not in bins]
+        where = f"{r['repo']} @ {r['tag']}"
+        if r["modified"]:
+            out.append(F(rules.MEDIUM, "tarball-differs-from-git",
+                         "Sürüm arşivindeki dosyalar git etiketindekinden farklı",
+                         f"{', '.join(r['modified'][:10])}{' …' if len(r['modified']) > 10 else ''} ({where})",
+                         file=r["file"]))
+        if bins:
+            out.append(F(rules.MEDIUM, "tarball-only-binary", "Sürüm arşivinde git'te olmayan ikili/veri dosyası var",
+                         f"{', '.join(bins[:10])} ({where})", file=r["file"]))
+        if texts:
+            scripts = [p for p in texts if members.get(p, {}).get("cat")]
+            sev = rules.MEDIUM if scripts else rules.INFO
+            out.append(F(sev, "tarball-only-file", "Sürüm arşivinde git'te olmayan dosya var"
+                         + (" (betik/derleme dosyası dahil)" if scripts else ""),
+                         f"{', '.join((scripts or texts)[:10])} ({where})", file=r["file"]))
+    return out
+
+
 # --- comparison and findings ---------------------------------------------------------
 
 def _role(src: dict) -> str:
@@ -623,7 +800,7 @@ def _line_hits(text: str, old_text: str | None, cat: str) -> list[tuple[str, str
         for sev, code, title, rx in rules.LINE_RULES:
             # Hooks get every rule; build and other scripts only the high-confidence ones,
             # because upstream build systems use curl, base64 and friends legitimately.
-            if cat not in ("persist", "system", "deb-script") and sev != rules.HIGH:
+            if cat not in ("persist", "system", "deb-script") and sev != rules.HIGH and code not in rules.BUILD_SAFE:
                 continue
             if rx.search(line) and (code, s) not in seen:
                 seen.add((code, s))
@@ -631,7 +808,7 @@ def _line_hits(text: str, old_text: str | None, cat: str) -> list[tuple[str, str
     return hits
 
 
-def analyze(old: dict | None, new: dict, binary_package: bool) -> dict:
+def analyze(old: dict | None, new: dict, binary_package: bool, tagcmp: list[dict] | None = None) -> dict:
     """Findings plus a compact summary (and text diffs) for the dashboard and the LLM."""
     F, findings, summaries = rules._f, [], []
     for s in new["sources"]:
@@ -712,6 +889,23 @@ def analyze(old: dict | None, new: dict, binary_package: bool) -> dict:
             if new_elf and not old_elf:
                 findings.append(F(rules.MEDIUM, "source-new-binary", "Kaynak kod arşivine derlenmiş ikili dosya eklendi",
                                   ", ".join(sorted(new_elf)[:8]), file=fname))
+        # Binary "test data" and build machinery changing in the same release: the
+        # shape of the xz attack (payload in tests/files, trigger in m4/).
+        if om and not binary_package:
+            data = sorted(p for p in new_paths | mod_paths if members[p].get("bin") and TESTISH.search(p))
+            mach = sorted(p for p in new_paths | mod_paths if MACHINERY.search(p))
+            if data and mach:
+                tc = next((r for r in tagcmp or [] if r["file"] == fname and r["status"] == "ok"), None)
+                unverified = [p for p in mach if not tc or p in tc["only_tar"] or p in tc["only_tar_expected"]
+                              or p in tc["modified"]]
+                findings.append(F(rules.MEDIUM if unverified else rules.INFO, "test-data-with-build-change",
+                                  "Aynı sürümde hem ikili test/veri dosyaları hem de derleme betikleri değişti "
+                                  "(xz saldırısının biçimi)",
+                                  f"veri: {', '.join(data[:6])}; derleme: {', '.join(mach[:6])}"
+                                  + ("" if unverified else " — derleme dosyaları git etiketindekiyle aynı")
+                                  + (f" — git'te olmayan ya da farklı olanlar: {', '.join(unverified[:6])}"
+                                     if unverified and tc else ""),
+                                  file=fname))
         # Rules on notable text.
         hits = 0
         for p, text in m["texts"].items():
@@ -725,6 +919,7 @@ def analyze(old: dict | None, new: dict, binary_package: bool) -> dict:
                 hits += 1
                 findings.append(F(sev, code, f"{title} (kaynak arşivinde)", file=f"{fname}: {p}", line=line))
         summaries.append(_summary(o, s, ch, m, om))
+    findings.extend(tag_findings(tagcmp or [], new))
     return {"findings": findings, "summaries": summaries, "baseline": has_any_baseline}
 
 
@@ -745,25 +940,39 @@ def _canon(m: dict) -> dict:
     return {**m, "members": {"content": rec}, "texts": texts}
 
 
+GENERATED_BUILD = re.compile(r"(^|/)(configure|aclocal\.m4|Makefile\.in|config\.h\.in)$")
+
+
 def _summary(o: dict | None, s: dict, ch: dict, m: dict, om: dict | None) -> dict:
     members = m["members"]
-    diffs, budget = [], 40000
-    paths = _notable(members, ch["added"] + ch["changed"]) if om else _notable(members, list(m["texts"]))
+    paths = (ch["added"] + ch["changed"]) if om else list(m["texts"])
+    candidates = []
     for p in paths:
-        if p not in m["texts"] or budget <= 0:
+        if p not in m["texts"]:
             continue
         new_t = m["texts"][p]
         old_t = (om or {}).get("texts", {}).get(p)
+        cat = members[p].get("cat")
         if om and old_t is not None:
             body = "\n".join(difflib.unified_diff(old_t.splitlines(), new_t.splitlines(),
                                                   f"a/{p}", f"b/{p}", lineterm="", n=3))
-        elif om or members[p].get("cat") in ("persist", "system", "deb-script"):
+        elif om or cat in ("persist", "system", "deb-script"):
             body = f"--- /dev/null\n+++ b/{p}\n" + "\n".join("+" + l for l in new_t.splitlines())
         else:
             continue  # no baseline: show full text only for hooks, not every build file
+        # What a human should read first: hooks, then hand-written build machinery and
+        # scripts, then regenerated autotools output. Small diffs first in each group:
+        # an injected trigger is a few lines, a regenerated configure is thousands.
+        group = (0 if cat in ("persist", "system", "deb-script") else
+                 2 if GENERATED_BUILD.search(p) else 1)
+        candidates.append((group, len(body), p, cat, body))
+    diffs, budget = [], 40000
+    for group, _, p, cat, body in sorted(candidates):
+        if budget <= 0:
+            break
         body = body[:min(budget, 12000)]
         budget -= len(body)
-        diffs.append({"path": p, "cat": members[p].get("cat"), "diff": body})
+        diffs.append({"path": p, "cat": cat, "diff": body})
     elf = sum(1 for r in members.values() if r.get("elf"))
     return {
         "file": s["file"], "old_file": o["file"] if o else None, "url": s["url"], "format": m["format"],
@@ -806,11 +1015,28 @@ def prompt_section(src: dict | None) -> tuple[str, str]:
         lines.append(head)
         for d in sm["diffs"]:
             bodies.append(f"### {sm['file']}: {d['path']} ({d['cat'] or 'text'})\n{d['diff']}")
+    for r in src.get("tag_compare", []):
+        if r["status"] == "git-archive":
+            lines.append(f"- {r['file']}: generated by the forge from git, so it matches the git tag")
+        elif r["status"] == "ok":
+            lines.append(f"- {r['file']} compared with git tag {r['tag']} of {r['repo']}: "
+                         f"{len(r['modified'])} files differ from git, {len(r['only_tar'])} unexpected files only in the "
+                         f"tarball, {len(r['only_tar_expected'])} tarball-only files of kinds autotools/gettext "
+                         f"normally generate, {r['only_git']} files only in git"
+                         + (f"\n    differ: {', '.join(r['modified'][:20])}" if r["modified"] else "")
+                         + (f"\n    only in tarball: {', '.join(r['only_tar'][:20])}" if r["only_tar"] else "")
+                         + (f"\n    generated-kind, only in tarball: {', '.join(r['only_tar_expected'][:30])}"
+                            if r["only_tar_expected"] else ""))
+            for d in r["diffs"]:
+                bodies.append(f"### {r['file']}: {d['path']} - git tag vs. release tarball\n{d['diff']}")
+        else:
+            lines.append(f"- {r['file']}: could not be compared with git ({r['status']})")
     return "\n".join(lines), "\n\n".join(bodies)[:60000]
 
 
 def pending(src: dict | None) -> bool:
-    return bool(src) and any(s.get("status") == "deferred" for s in src.get("sources", []))
+    return bool(src) and any(s.get("status") == "deferred"
+                             for s in [*src.get("sources", []), *src.get("tag_compare", [])])
 
 
 def fingerprint(src: dict | None) -> str:
@@ -820,6 +1046,8 @@ def fingerprint(src: dict | None) -> str:
     for s in src["sources"]:
         h.update(f"{s['file']}|{s['status']}|{s.get('verified')}\n".encode())
     h.update(str(src.get("baseline")).encode())
+    for r in src.get("tag_compare", []):
+        h.update(f"tag|{r['file']}|{r['status']}|{r.get('tag')}\n".encode())
     return h.hexdigest()[:10]
 
 
@@ -848,10 +1076,21 @@ def review(pkgbase: str, name: str, new_commit: str, new_srcinfo: str, base_comm
     prune_downloads(pkgbase, {s["file"] for s in new["sources"] if s.get("cached") or s["status"] == "deferred"})
     formats = {(s.get("manifest") or {}).get("format") for s in new["sources"]}
     binary = name.endswith(("-bin", "-appimage")) or bool(formats & {"deb", "appimage", "rpm"})
-    res = analyze(old, new, binary)
+    tc = None
+    if cfg["tag_compare"] and not binary:
+        tc = new.get("tag_compare")
+        if tc is None or any(r["status"] == "deferred" for r in tc):
+            from .aur import parse_srcinfo
+            info = parse_srcinfo(new_srcinfo)
+            tc = tag_compare(pkgbase, new, info, [*info.get("pkgnames", []), pkgbase], cfg["max_file_mb"])
+            new["tag_compare"] = tc
+            if load_manifest(pkgbase, new_commit) and not any(r["status"] == "deferred" for r in tc):
+                _save_manifest(pkgbase, new_commit, new)
+    res = analyze(old, new, binary, tc)
     return {
         "sources": [{k: v for k, v in s.items() if k != "manifest"} for s in new["sources"]],
         "summaries": res["summaries"],
         "baseline": res["baseline"],
         "findings": res["findings"],
+        "tag_compare": tc or [],
     }
