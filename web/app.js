@@ -165,8 +165,10 @@ function renderStats(r) {
   const aurUp = r.aur.filter((a) => a.new_version);
   const bad = r.aur.filter((a) => ["danger", "warning", "missing"].includes(a.status)).length;
   const unrev = r.aur.filter((a) => a.status === "unreviewed").length;
-  const highV = r.vulns.filter((v) => ["Critical", "High"].includes(v.severity)).length;
-  const fixable = r.vulns.filter((v) => v.fix_pending).length;
+  const activeV = r.vulns.filter((v) => !v.stale && !v.ack);
+  const highV = activeV.filter((v) => ["Critical", "High"].includes(v.severity)).length;
+  const fixable = activeV.filter((v) => v.fix_pending).length;
+  const setAside = r.vulns.length - activeV.length;
   const unread = r.news.filter((n) => n.since_last_upgrade && !n.read).length;
   const latest = r.news[0];
   const stat = (tab, label, value, sub) =>
@@ -174,7 +176,7 @@ function renderStats(r) {
   return `<section class="stats">
     ${stat("repo", "Resmi depo güncellemesi", r.repo.length, `${imp ? `<span>${imp} önemli</span>` : ""}${cve ? `<span>${cve} güvenlik düzeltmesi</span>` : ""}${!imp && !cve ? "imzalı resmi paketler" : ""}`)}
     ${stat("aur", "AUR güncellemesi", aurUp.length, bad ? `<span class="badge warn">${bad} dikkat</span>` : unrev ? `<span>${unrev} incelenmedi</span>` : "sorun bulunmadı")}
-    ${stat("vulns", "Bilinen güvenlik açığı", r.vulns.length, `${highV ? `<span>${highV} yüksek/kritik</span>` : ""}<span>${fixable} bu güncellemeyle kapanıyor</span>`)}
+    ${stat("vulns", "Bilinen güvenlik açığı", activeV.length, `${highV ? `<span>${highV} yüksek/kritik</span>` : ""}<span>${fixable} bu güncellemeyle kapanıyor</span>${setAside ? `<span>${setAside} eski/incelenmiş ayrıldı</span>` : ""}`)}
     ${stat("news", "Yeni Arch haberi", unread, unread ? "son güncellemenden sonra yayımlandı" : latest ? `son haber: ${fmtDay(latest.published)}` : "haber alınamadı")}
   </section>`;
 }
@@ -227,7 +229,7 @@ function renderTabs(r) {
   const tabs = [
     ["aur", "AUR", r.aur.length],
     ["repo", "Resmi depo", r.repo.length],
-    ["vulns", "Güvenlik", r.vulns.length],
+    ["vulns", "Güvenlik", r.vulns.filter((v) => !v.stale && !v.ack).length],
     ["news", "Haberler", r.news.filter((n) => n.since_last_upgrade && !n.read).length || ""],
     ["system", "Sistem", r.system.pacnew.length || ""],
   ];
@@ -395,14 +397,27 @@ function renderVulns(r) {
     }
     return parts.join("") || `<span class="muted small">—</span>`;
   };
-  return `<div class="table-wrap"><table><thead><tr><th>Önem</th><th>Paket</th><th>Etkilediği</th><th>Düzeltme</th><th>Kayıt</th></tr></thead><tbody>
-    ${r.vulns.map((v) => `<tr><td><span class="badge ${AVG_SEV[v.severity] || "neutral"}">${AVG_SEV_TR[v.severity] || esc(v.severity)}</span></td>
+  const table = (list, mode) => `<div class="table-wrap"><table><thead><tr><th>Önem</th><th>Paket</th><th>Etkilediği</th><th>Düzeltme</th><th>Kayıt</th><th></th></tr></thead><tbody>
+    ${list.map((v) => `<tr><td><span class="badge ${mode === "active" ? AVG_SEV[v.severity] || "neutral" : "neutral"}">${AVG_SEV_TR[v.severity] || esc(v.severity)}</span></td>
       <td><b>${esc(v.package)}</b><div class="mono muted small">${esc(v.installed)}</div></td>
-      <td style="max-width:380px">${usedBy(v)}</td>
-      <td>${v.fix_pending ? `<span class="badge ok">güncellemede: ${esc(v.fixed)}</span>` : v.fixed ? `<span class="mono">${esc(v.fixed)}</span>` : `<span class="muted">henüz yok</span>`}</td>
-      <td><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.avg)}</a><div class="muted small">${v.issue_count} CVE · ${esc(v.type)}</div></td></tr>`).join("")}
-    </tbody></table></div>
-    <p class="note">Sıralama: önem derecesi, açıklı kütüphaneyi çalışan bir servisin yüklemesi (⚙), düzeltmenin bekleyen güncellemede olması ve etkilenen uygulama sayısı. "Etkilediği" sütunu, senin kurduğun ve bu paketi doğrudan ya da dolaylı kullanan programları gösterir.</p>
+      <td style="max-width:360px">${usedBy(v)}</td>
+      <td>${v.fix_pending ? `<span class="badge ok">güncellemede: ${esc(v.fixed)}</span>` : v.fixed ? `<span class="mono">${esc(v.fixed)}</span>` : `<span class="muted">${mode === "stale" ? "kaydedilmemiş" : "henüz yok"}</span>`}</td>
+      <td><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.avg)}</a><div class="muted small" title="${esc(v.issues.join(", "))}">${esc(v.issues.slice(0, 2).join(", "))}${v.issue_count > 2 ? ` +${v.issue_count - 2}` : ""} · ${esc(v.type)}</div>
+        ${mode === "acked" && v.ack.note ? `<div class="small">Not: ${esc(v.ack.note)}</div>` : ""}</td>
+      <td>${mode === "acked"
+        ? `<button class="btn sm ghost" data-act="unack" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}">Geri al</button>`
+        : `<button class="btn sm ghost" data-act="ack" data-avg="${esc(v.avg)}" data-pkg="${esc(v.package)}" title="Bu sürüm için gizle">İnceledim</button>`}</td></tr>`).join("")}
+    </tbody></table></div>`;
+  const active = r.vulns.filter((v) => !v.stale && !v.ack);
+  const acked = r.vulns.filter((v) => v.ack);
+  const stale = r.vulns.filter((v) => v.stale && !v.ack);
+  return `${active.length ? table(active, "active") : `<div class="empty">Etkin bir güvenlik açığı yok.</div>`}
+    <p class="note">Sıralama: önem derecesi, açıklı kütüphaneyi çalışan bir servisin yüklemesi (⚙), düzeltmenin bekleyen güncellemede olması ve etkilenen uygulama sayısı. "Etkilediği" sütunu, senin kurduğun ve bu paketi doğrudan ya da dolaylı kullanan programları gösterir. Düzeltmesi henüz olmayan bir açığı inceleyip önlemini aldıysan "İnceledim" ile gizleyebilirsin; paketin sürümü değişince yeniden görünür.</p>
+    ${stale.length ? `<details class="more" style="margin-top:12px;border:1px solid var(--border);border-radius:8px" data-key="vuln-stale" ${ui.openDetails.has("vuln-stale") ? "open" : ""}>
+      <summary>Büyük olasılıkla eski kayıtlar (${stale.length})</summary>
+      <div class="more-body"><p class="note" style="margin:0">Takipçi bu kayıtlar için düzeltilmiş sürümü hiç girmemiş. CVE'ler önceki yıllara ait ve kurulu sürümün, açığın bildirildiği sürümden daha yeni bir upstream sürümü. Bu tür kayıtlar çoğunlukla düzeltilmiştir ama bu bir tahmindir; emin olmak için kaydın bağlantısındaki CVE'lere bak.</p>${table(stale, "stale")}</div></details>` : ""}
+    ${acked.length ? `<details class="more" style="margin-top:12px;border:1px solid var(--border);border-radius:8px" data-key="vuln-acked" ${ui.openDetails.has("vuln-acked") ? "open" : ""}>
+      <summary>İncelediğin ve gizlediğin kayıtlar (${acked.length})</summary><div class="more-body">${table(acked, "acked")}</div></details>` : ""}
     <p class="note">Kaynak: Arch Linux güvenlik takipçisi (security.archlinux.org). Takipçi gönüllülerce tutulur ve eksik ya da gecikmeli olabilir; "henüz yok" yazan açıklar için yapılacak bir şey yoksa Arch'ın düzeltmeyi yayımlamasını beklemek gerekir.</p>`;
 }
 
@@ -495,6 +510,8 @@ document.addEventListener("click", async (ev) => {
     else if (act === "rereview") await rereview(t.dataset.name);
     else if (act === "update") await startUpdate();
     else if (act === "restart") await restartServices();
+    else if (act === "ack") await ackVuln(t.dataset.avg, t.dataset.pkg);
+    else if (act === "unack") { await api("/api/vuln/ack", { avg: t.dataset.avg, package: t.dataset.pkg, undo: true }); await refresh(); }
   } catch (e) {
     toast(e.message, true);
   }
@@ -594,6 +611,16 @@ async function startUpdate() {
   if (!ok) return;
   const res = await api("/api/update", { aur, news_ack: ui.newsAck });
   toast(`Güncelleme Konsole'da başladı${res.aur.length ? ` (AUR: ${res.aur.join(", ")})` : ""}`);
+  await refresh();
+}
+
+async function ackVuln(avg, pkg) {
+  const ok = await confirmDialog(`${pkg} · ${avg} gizlensin mi?`,
+    `<p style="margin:0">Kayıt, <b>${esc(pkg)}</b> paketinin şu anki sürümü için listeden kalkar. Paket güncellenince yeniden kontrol edilir.</p>
+     <label class="field"><span>Not (isteğe bağlı): neden güvenli ya da ne önlem aldın?</span><input class="input" id="confirm-input" placeholder="örn. upstream 1.7.1'de düzeltilmiş" autocomplete="off"></label>`);
+  if (!ok) return;
+  await api("/api/vuln/ack", { avg, package: pkg, note: $("#confirm-input")?.value || "" });
+  toast("Gizlendi");
   await refresh();
 }
 

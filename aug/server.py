@@ -111,6 +111,11 @@ def _decorate_report(report: dict | None) -> dict | None:
     read = set(st["news_read"])
     for n in report["news"]:
         n["read"] = n["id"] in read
+    acks = st.get("vuln_ack", {})
+    for v in report.get("vulns", []):
+        ack = acks.get(f"{v['avg']}:{v['package']}")
+        # An acknowledgement only holds for the version that was reviewed.
+        v["ack"] = ack if ack and ack.get("version") == v["installed"] else None
     for a in report["aur"]:
         if a.get("target"):
             ap = st["approvals"].get(a["name"])
@@ -292,13 +297,27 @@ def make_handler(app: App, port: int):
         report = _decorate_report(report)
         return updater.launch(report, body.get("aur") or [], bool(body.get("news_ack")))
 
+    def r_vuln_ack(body):
+        report = check.load_report() or {"vulns": []}
+        v = next((x for x in report["vulns"] if x["avg"] == body.get("avg") and x["package"] == body.get("package")), None)
+        if not v:
+            raise ValueError("Kayıt güncel raporda yok.")
+        key = f"{v['avg']}:{v['package']}"
+        with state.mutate() as st:
+            if body.get("undo"):
+                st["vuln_ack"].pop(key, None)
+            else:
+                st["vuln_ack"][key] = {"version": v["installed"], "at": int(time.time()),
+                                       "note": str(body.get("note") or "")[:500]}
+        return {"ok": True}
+
     def r_restart(body):
         report = check.load_report()
         if not report:
             raise ValueError("Önce bir kontrol çalıştır.")
         return updater.launch_restart(report, body.get("units") or [])
 
-    ROUTES = {"/api/restart": r_restart, "/api/check": r_check, "/api/news/read": r_news_read, "/api/approve": r_approve,
+    ROUTES = {"/api/vuln/ack": r_vuln_ack, "/api/restart": r_restart, "/api/check": r_check, "/api/news/read": r_news_read, "/api/approve": r_approve,
               "/api/unapprove": r_unapprove, "/api/rereview": r_rereview, "/api/settings": r_settings,
               "/api/secret": r_secret, "/api/test-provider": r_test_provider, "/api/update": r_update}
     return Handler

@@ -97,6 +97,7 @@ def vulnerable_installed(avgs: list[dict], installed: dict[str, str],
                 if fixed and vercmp(ver, fixed) >= 0:
                     continue
                 fix_pending = bool(fixed and pkg in pending and vercmp(pending[pkg], fixed) >= 0)
+                stale = _likely_stale(avg, ver)
             except Exception:
                 continue
             found.append({
@@ -111,6 +112,25 @@ def vulnerable_installed(avgs: list[dict], installed: dict[str, str],
                 "issues": avg.get("issues", [])[:12],
                 "issue_count": len(avg.get("issues", [])),
                 "url": f"https://security.archlinux.org/{avg['name']}",
+                "stale": stale,
             })
     found.sort(key=lambda x: (-SEVERITY_ORDER.get(x["severity"], 0), not x["fix_pending"], x["package"]))
     return found
+
+
+def _upstream(version: str) -> str:
+    """Strip epoch and pkgrel: '1:2.15.4-1' -> '2.15.4'."""
+    return version.split(":", 1)[-1].rsplit("-", 1)[0]
+
+
+def _likely_stale(avg: dict, installed: str) -> bool:
+    """The tracker often never records the fixed version. Treat an entry as a
+    stale record when no fix is recorded, the CVEs are from an earlier year,
+    and the installed upstream release is newer than the one reported as
+    affected. Such entries are shown separately, never silently dropped."""
+    if avg.get("fixed"):
+        return False
+    years = [int(m[1]) for c in avg.get("issues", []) if (m := re.match(r"CVE-(\d{4})-", c))]
+    if not years or max(years) >= datetime.now().year:
+        return False
+    return vercmp(_upstream(installed), _upstream(avg["affected"])) > 0

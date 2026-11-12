@@ -230,7 +230,8 @@ def _run(settings: dict) -> dict:
         v["services"] = sorted(pkg_units.get(p, ()))
         # Higher = deal with it first.
         v["priority"] = (sev_rank.get(v["severity"], 0) * 10 + (8 if v["services"] else 0)
-                         + (5 if v["fix_pending"] else 0) + min(len(v["used_by"]), 20) / 10)
+                         + (5 if v["fix_pending"] else 0) + min(len(v["used_by"]), 20) / 10
+                         - (100 if v.get("stale") else 0))
     vulns.sort(key=lambda v: -v["priority"])
 
     _progress("Sistem durumu okunuyor")
@@ -271,7 +272,8 @@ def summary(report: dict) -> dict:
         "warning": sum(1 for a in aur_items if a["status"] in ("warning", "missing")),
         "unread_news": sum(1 for n in report["news"] if n["since_last_upgrade"] and not n["read"]),
         "vulns_fixable": sum(1 for v in report["vulns"] if v["fix_pending"]),
-        "critical_vulns": sum(1 for v in report["vulns"] if v["severity"] in ("Critical", "High")),
+        "critical_vulns": sum(1 for v in report["vulns"]
+                              if v["severity"] in ("Critical", "High") and not v.get("stale")),
     }
 
 

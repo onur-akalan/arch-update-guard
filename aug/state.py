@@ -10,7 +10,8 @@ from contextlib import contextmanager
 
 from .config import RUNTIME_DIR, STATE_FILE, atomic_write_json, read_json
 
-DEFAULT_STATE = {"reviews": {}, "approvals": {}, "maintainers": {}, "news_read": [], "last_check": None}
+DEFAULT_STATE = {"reviews": {}, "approvals": {}, "maintainers": {}, "news_read": [], "vuln_ack": {},
+                 "last_check": None}
 _lock = threading.RLock()
 
 
