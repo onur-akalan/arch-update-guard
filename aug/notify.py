@@ -18,6 +18,9 @@ FORGET_DAYS = 90
 def events(report: dict, st: dict, level: str) -> list[dict]:
     """[{key, text, critical}] for this report, before de-duplication."""
     out: list[dict] = []
+    for i in report.get("incidents", []):
+        if i["severity"] == "high":
+            out.append({"key": f"incident:{i['kind']}:{i['package']}", "critical": True, "text": "⚠ " + i["title"]})
     for a in report.get("aur", []):
         rc = a.get("review_commit") or a.get("target") or a.get("new_version")
         if a["status"] == "danger":

@@ -16,7 +16,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, check, deps, review, schedule, sources, state, updater, vulnai
+from . import __version__, check, deps, review, rules, schedule, sources, state, updater, vulnai
 from .config import (SERVER_FILE, WEB_DIR, SettingsError, atomic_write_json, delete_secret, get_secret,
                      load_settings, read_json, save_settings, set_secret, validate_settings)
 
@@ -302,7 +302,7 @@ def make_handler(app: App, port: int):
             raise ValueError("Uyarılı paketi onaylamak için paket adını yazman gerekiyor.")
         with state.mutate() as st:
             st["approvals"][name] = {"commit": commit, "at": int(time.time()), "status": item["status"]}
-            st["maintainers"][item["pkgbase"]] = item.get("maintainer")
+            st["maintainers"][item["pkgbase"]] = item.get("maintainer") or rules.ORPHAN
         return {"ok": True}
 
     def r_unapprove(body):

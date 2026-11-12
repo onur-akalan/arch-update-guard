@@ -16,6 +16,7 @@ Arch Linux için yerel bir güncelleme panosu. Resmi depo ve AUR güncellemeleri
 | Güvenlik açıkları | security.archlinux.org | Kurulu sürümleri etkileyen kayıtlar; hangi uygulamaları ve çalışan servisleri etkilediği, bekleyen güncellemenin düzeltip düzeltmediği. |
 | Düzeltme kanıtı | Arch PKGBUILD, NVD, CVE açıklaması | Sırasıyla: Arch paketi CVE adıyla yama uyguluyor mu; NVD sürüm aralığı; açıklamadaki "X'ten önceki sürümler". Kanıt "düzeltilmiş" diyorsa kayıt ayrı grupta gösterilir. |
 | Yapay zekâ değerlendirmesi | Seçili sağlayıcı | Kurulu sürüm etkileniyor mu, bu makine için gerçek risk ne, ne yapmalısın. Puan düşük olsa bile etkileniyorsan somut adım önerir. Etkin açıklar her kontrolde, diğerleri istenince değerlendirilir. |
+| Bilinen saldırılar | Arch'ın yayımladığı ele geçirilmiş AUR paketleri listesi (Haziran 2026 "Atomic Arch"), pacman.log, PATH | Listedeki bir paket saldırı tarihinden sonra bu bilgisayarda kurulduysa (sonradan kaldırılmış olsa bile) kritik uyarı verir. `sudo`, `ssh`, `pacman` gibi komutları gölgeleyen dosyaları (`~/.local/bin/sudo` gibi) ve kabuk dosyalarındaki sarmalayıcıları arar. Liste `security.compromised_lists` ayarına yenileri eklenebilir. |
 | Yeniden başlatma | pacman.log, systemd, /proc | Eski kütüphaneyle çalışan servisler ve uygulamalar; bilgisayarın yeniden başlatılması gerekip gerekmediği. |
 | Ağa açık portlar | `ss`, `docker ps` | Dışarıdan erişilebilen dinleyiciler; Docker'ın tüm ağa açtığı portlar. |
 | Sistem | pacman.log, pacdiff, disk | `.pacnew` dosyaları, boş alan. |
@@ -26,6 +27,7 @@ AUR paketleri şu kurallarla güncellemeye girer:
 - **Bekleme süresindeki** temiz paketleri beklemeden elle onaylayabilirsin.
 - **İncelenmemiş, dikkat ya da tehlike** durumundaki paketler yalnızca elle onaylanabilir. Dikkat ve tehlike için paket adını yazman gerekir.
 - **Yeni bir AUR bağımlılığı getiren** güncelleme her zaman elle onay ister; bağımlılık temiz olsa bile.
+- **Sahiplenme ve bakımcı değişikliği uyarı verir.** Sahipsiz bir paketin biri tarafından sahiplenilmesi (Haziran 2026 saldırısının yöntemi) ve bakımcı değişikliği elle onay ister. PKGBUILD ya da `.install` içinde adı verilen bir npm/bun/pip paketinin indirilmesi (`npm install atomic-lockfile` gibi) uyarı verir; `.install` betiğinde (root olarak) tehlike sayılır.
 - **Onay commit'e bağlıdır.** Onay, paketin ve getirdiği yeni AUR bağımlılıklarının incelenen commit'lerini kapsar; herhangi biri AUR'da değişirse onay düşer. Güncelleme başlamadan hemen önce ve betik içinde yay çalışmadan önce bu commit'ler yeniden kontrol edilir.
 
 Kaynak inceleme hakkında:

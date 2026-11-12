@@ -41,6 +41,11 @@ DEFAULT_SETTINGS: dict = {
     "security": {
         "auto_analyze": True,      # AI-assess active (not fixed / not stale) entries during checks
         "nvd_budget_seconds": 60,  # time per check spent fetching CVE details from NVD
+        # Published lists of compromised AUR packages (one name per line).
+        "compromised_lists": [
+            {"name": "Atomic Arch (Haziran 2026)", "url": "https://md.archlinux.org/s/SxbqukK6IA/download",
+             "since": "2026-06-09"},
+        ],
     },
     "sources": {
         "enabled": True,     # download and inspect the source files of AUR updates
@@ -166,6 +171,13 @@ def validate_settings(s: dict) -> dict:
         raise SettingsError("NVD süresi bir tam sayı olmalı.")
     if not 0 <= sec["nvd_budget_seconds"] <= 900:
         raise SettingsError("NVD süresi 0 ile 900 saniye arasında olmalı.")
+    lists = []
+    for lst in sec.get("compromised_lists") or []:
+        if not isinstance(lst, dict) or not str(lst.get("url", "")).startswith("https://"):
+            raise SettingsError("Saldırı listesi adresi https:// ile başlamalı.")
+        lists.append({"name": str(lst.get("name") or lst["url"])[:80], "url": lst["url"],
+                      "since": str(lst.get("since") or "")[:10] or None})
+    sec["compromised_lists"] = lists
     src = s["sources"]
     src["enabled"] = bool(src["enabled"])
     src["baseline"] = bool(src["baseline"])

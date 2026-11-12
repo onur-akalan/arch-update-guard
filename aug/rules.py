@@ -12,6 +12,7 @@ import urllib.parse
 from .aur import is_vcs
 
 HIGH, MEDIUM, INFO = "high", "medium", "info"
+ORPHAN = ""  # stored as the known maintainer of a package that had none (None = never seen)
 
 # (severity, code, title, regex) - matched against lines the update adds.
 LINE_RULES: list[tuple[str, str, str, re.Pattern]] = [
@@ -45,6 +46,12 @@ LINE_RULES: list[tuple[str, str, str, re.Pattern]] = [
      re.compile(r"systemctl\s+(--\S+\s+)*(enable|start)")),
     (MEDIUM, "build-time-network", "Derleme sırasında paket yöneticisiyle ağdan ek kod çekiliyor",
      re.compile(r"\b(npm|pnpm|yarn)\s+(i|install|add)\b[^#\n]*-g|\bpip3?\s+install\b(?![^#\n]*--no-deps)|\bgo\s+install\b|\bcargo\s+install\b")),
+    # June 2026 "Atomic Arch" campaign: adopted orphan packages got `npm install atomic-lockfile`,
+    # `bun install js-digest`, `npm install lockfile-js` added to PKGBUILD / .install. A plain
+    # `npm install` / `npm ci` (from the project's lockfile) is normal; naming a package is not.
+    (MEDIUM, "named-package-fetch", "Derleme ya da kurulum sırasında adı verilen bir npm/bun/pip paketi indiriliyor",
+     re.compile(r"\b(npm|pnpm|yarn|bun)\s+(i|install|add)\b(\s+--?[\w=-]+)*\s+(?!-)['\"]?@?[\w][\w./@-]*"
+                r"|\b(npx|bunx|pnpx)\s+(--?[\w=-]+\s+)*['\"]?@?[\w][\w./@-]*")),
     (MEDIUM, "obfuscation", "Gizlenmiş görünen uzun kodlanmış metin",
      re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")),
     (MEDIUM, "ld-preload", "LD_PRELOAD kullanımı",
@@ -70,6 +77,12 @@ LINE_RULES: list[tuple[str, str, str, re.Pattern]] = [
 # (upstream build systems use curl, base64 and the like legitimately, so the
 # generic medium rules are not applied there).
 BUILD_SAFE = {"decompress-exec", "byte-slice-exec", "tr-swap", "binary-grep", "eval-pipeline"}
+
+INSTALL_NET = {"network-in-build", "build-time-network", "named-package-fetch", "pipe-to-shell", "download-exec"}
+
+# Package names from published lists of compromised AUR packages -> campaign name.
+# Filled by check.py from feeds.fetch_compromised() before packages are scanned.
+KNOWN_BAD: dict[str, str] = {}
 
 CODE_FILE = re.compile(r"(^|/)(PKGBUILD|[^/]+\.(install|sh|bash|py|hook|service|desktop))$")
 
@@ -131,7 +144,17 @@ def scan(*, pkgname: str, diff_text: str, has_base: bool, old_info: dict, new_in
         for sev, code, title, rx in LINE_RULES:
             if rx.search(line) and (code, file, stripped) not in seen:
                 seen.add((code, file, stripped))
+                # .install scripts run as root after pacman installs the package: they have
+                # no reason to download anything.
+                if file.endswith(".install") and code in INSTALL_NET:
+                    sev, title = HIGH, title + " — kurulum betiğinde, root olarak"
                 findings.append(_f(sev, code, title, file=file, line=stripped))
+    hit = KNOWN_BAD.get(pkgname)
+    if hit:
+        findings.append(_f(MEDIUM, "known-compromised",
+                           f"Bu paket bilinen bir saldırıda ele geçirilmişti ({hit})",
+                           "Paket o zamandan beri temizlenmiş ya da başka birine geçmiş olabilir. Bakımcıyı, commit "
+                           "geçmişini ve değişiklikleri dikkatle incele."))
 
     # Structural checks from .SRCINFO (only meaningful against a base).
     if has_base and old_info and new_info:
@@ -169,7 +192,11 @@ def scan(*, pkgname: str, diff_text: str, has_base: bool, old_info: dict, new_in
                                ", ".join(names)))
     if meta:
         maint = meta.get("Maintainer")
-        if known_maintainer and maint != known_maintainer:
+        if known_maintainer == ORPHAN and maint:
+            findings.append(_f(MEDIUM, "orphan-adopted", "Sahipsiz paket yeni biri tarafından sahiplenildi",
+                               f"Yeni bakımcı: {maint}. Haziran 2026 saldırısında yüzlerce sahipsiz paket böyle "
+                               "sahiplenilip PKGBUILD'e zararlı komut eklendi; değişiklikleri dikkatle incele."))
+        elif known_maintainer not in (None, ORPHAN) and maint != known_maintainer:
             findings.append(_f(MEDIUM, "maintainer-changed", "Paketin bakımcısı değişti",
                                f"{known_maintainer} → {maint or 'sahipsiz'}"))
         if not maint:

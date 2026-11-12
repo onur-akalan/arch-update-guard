@@ -131,6 +131,11 @@ function renderTop(d) {
 
 function renderAlerts(d, r) {
   const out = [];
+  for (const i of (r.incidents || []).filter((x) => x.severity === "high"))
+    out.push(alertBox("danger", "⛔", esc(i.title), esc(i.detail)));
+  const oldBad = (r.incidents || []).filter((x) => x.severity !== "high");
+  if (oldBad.length) out.push(alertBox("info", "ℹ", "Kurulu bazı paketler bilinen bir saldırı listesinde, ama saldırıdan önce kurulmuş",
+    `${oldBad.map((x) => `<b>${esc(x.package)}</b> (${esc(x.campaign)})`).join(", ")}. Zararlı sürüm kurulmamış görünüyor; bir sonraki güncellemelerini dikkatle incele.`));
   const danger = r.aur.filter((a) => a.status === "danger");
   if (danger.length) out.push(alertBox("danger", "⛔", `${danger.length} AUR güncellemesinde tehlikeli bulgu var`,
     `İncelemeden kurma: ${danger.map((a) => `<b>${esc(a.name)}</b>`).join(", ")}. Ayrıntılar AUR sekmesinde.`));
@@ -469,7 +474,10 @@ function renderRepo(r) {
 }
 
 function renderVulns(r) {
-  if (!r.vulns.length) return `<div class="empty">Kurulu sürümleri etkileyen kayıtlı bir güvenlik açığı yok.</div>`;
+  const lists = r.incident_lists || [];
+  const inc = r.incidents || [];
+  const listNote = lists.length ? `<div class="srcline small" style="margin-bottom:12px">🛡 Bilinen saldırı listeleri: ${lists.map((l) => `${esc(l.name)} (${l.count} paket)`).join(", ")} — ${inc.length ? `<b class="warn-text">${inc.length} eşleşme, yukarıdaki uyarılara bak</b>` : "bu bilgisayarda kurulmuş ya da kurulu hiçbir paket listede yok; sudo/ssh'yi gölgeleyen sahte komut da yok"}.</div>` : "";
+  if (!r.vulns.length) return listNote + `<div class="empty">Kurulu sürümleri etkileyen kayıtlı bir güvenlik açığı yok.</div>`;
   const groups = { active: [], fixed: [], stale: [], acked: [] };
   for (const v of r.vulns) groups[vulnGroup(v)].push(v);
   const analyzing = new Set(ui.data.analyzing || []);
@@ -479,7 +487,7 @@ function renderVulns(r) {
       <summary>${title} (${list.length})</summary>
       <div class="more-body">${intro ? `<p class="note" style="margin:0">${intro}</p>` : ""}${list.map((v) => renderVuln(v, key, analyzing)).join("")}</div>
     </details>`;
-  return `<div class="toolbar">
+  return listNote + `<div class="toolbar">
       <button class="btn sm" data-act="analyze-all" ${pendingAi && !analyzing.size ? "" : "disabled"}>${analyzing.size ? `Analiz ediliyor… (${analyzing.size})` : `Yapay zekâya değerlendirt (${pendingAi})`}</button>
       <span class="muted small">${r.cve_pending ? `${r.cve_pending} CVE'nin ayrıntısı NVD'den sonraki kontrollerde gelecek. ` : ""}Kayıtlar: Arch güvenlik takipçisi; CVE ayrıntıları: NVD.</span>
     </div>

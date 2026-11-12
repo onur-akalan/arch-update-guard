@@ -7,7 +7,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from . import aur, cve, deps, feeds, review, rules, runtime, sources, state, system, vulnai
+from . import aur, cve, deps, feeds, incidents, review, rules, runtime, sources, state, system, vulnai
 from .config import REPORT_FILE, RUNTIME_DIR, atomic_write_json, get_secret, load_settings, read_json
 
 log = logging.getLogger("aug")
@@ -55,7 +55,7 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
     update = aur.needs_update(name, installed, meta["Version"])
     if not update:
         # Still record the maintainer baseline for later comparison.
-        st["maintainers"].setdefault(pkgbase, meta.get("Maintainer"))
+        st["maintainers"].setdefault(pkgbase, meta.get("Maintainer") or rules.ORPHAN)
         sources.prune_downloads(pkgbase, set())  # installed: yay no longer needs the kept downloads
         return None
 
@@ -67,10 +67,14 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
     commits = aur.commits_between(repo, base, target)
     old_info = aur.srcinfo_at(repo, base) if base else {}
     new_info = aur.srcinfo_at(repo, target)
+    # None = never seen; ORPHAN ("") = it had no maintainer. Older state stored None for orphans.
     known = st["maintainers"].get(pkgbase)
+    if known is None and pkgbase in st["maintainers"]:
+        known = rules.ORPHAN
     findings = rules.scan(pkgname=name, diff_text=d["text"], has_base=bool(base), old_info=old_info,
                           new_info=new_info, commits=commits, prev_authors=aur.previous_authors(repo, base),
                           meta=meta, known_maintainer=known)
+    st["maintainers"].setdefault(pkgbase, meta.get("Maintainer") or rules.ORPHAN)
 
     src = inspect_sources(pkgbase, name, repo, base, target, settings)
     if src:
@@ -189,6 +193,20 @@ def _run(settings: dict) -> dict:
         r["important"] = r["name"] in IMPORTANT
         r["reboot"] = r["name"] in REBOOT_HINT
         r["major"] = r["old"].split(".")[0].split(":")[-1] != r["new"].split(".")[0].split(":")[-1]
+
+    _progress("Bilinen saldırı listeleri kontrol ediliyor")
+    try:
+        bad = incidents.fetch_lists(settings["security"]["compromised_lists"])
+    except Exception as e:
+        bad = {}
+        errors.append(f"Saldırı listeleri alınamadı: {e}")
+    rules.KNOWN_BAD = {n: i["campaign"] for n, i in bad.items()}
+    try:
+        incident_list = incidents.check_lists(bad, foreign, incidents.package_history()) + incidents.shadowing()
+    except Exception as e:
+        log.exception("incidents")
+        incident_list = []
+        errors.append(f"Saldırı izleri kontrol edilemedi: {e}")
 
     _progress("AUR bilgileri alınıyor")
     aur_items: list[dict] = []
@@ -311,6 +329,10 @@ def _run(settings: dict) -> dict:
         "aur": aur_items,
         "news": news,
         "vulns": vulns,
+        "incidents": incident_list,
+        "incident_lists": [{"name": l["name"], "since": l.get("since"),
+                            "count": sum(1 for i in bad.values() if i["campaign"] == l["name"])}
+                           for l in settings["security"]["compromised_lists"]],
         "cve_pending": cve_pending,
         "runtime": rt,
         "system": {
