@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from .config import RUNTIME_DIR, STATE_FILE, atomic_write_json, read_json
 
 DEFAULT_STATE = {"reviews": {}, "approvals": {}, "maintainers": {}, "news_read": [], "vuln_ack": {},
-                 "vuln_ai": {}, "last_check": None}
+                 "vuln_ai": {}, "notified": {}, "last_check": None}
 
 
 def vuln_ai_key(v: dict, provider: str | None) -> str:

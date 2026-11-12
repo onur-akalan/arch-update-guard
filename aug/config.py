@@ -35,6 +35,8 @@ DEFAULT_SETTINGS: dict = {
     "hold_days": 2,
     "schedule": "daily",  # daily | twice | weekly
     "notifications": True,
+    "notify_level": "important",  # important: only new findings, news, critical vulns | all: every check with updates
+    "startup_delay_minutes": 10,  # scheduled check waits this long after boot so it does not slow the login
     "browser": "chromium-app",  # chromium-app | default
     "security": {
         "auto_analyze": True,      # AI-assess active (not fixed / not stale) entries during checks
@@ -45,6 +47,7 @@ DEFAULT_SETTINGS: dict = {
         "max_file_mb": 400,  # larger downloads are skipped (reported, not inspected)
         "baseline": True,    # first time: also fetch the installed version's sources to compare
         "time_budget_minutes": 15,  # download time per check; the rest resumes on the next check
+        "background_rate_mb": 3,    # MB/s cap for downloads in scheduled checks (0 = no cap)
     },
     "review": {
         "enabled": True,
@@ -146,6 +149,14 @@ def validate_settings(s: dict) -> dict:
     if s["browser"] not in ("chromium-app", "default"):
         raise SettingsError("Geçersiz tarayıcı seçimi.")
     s["notifications"] = bool(s["notifications"])
+    if s["notify_level"] not in ("important", "all"):
+        raise SettingsError("Geçersiz bildirim düzeyi.")
+    try:
+        s["startup_delay_minutes"] = int(s["startup_delay_minutes"])
+    except (TypeError, ValueError):
+        raise SettingsError("Açılış gecikmesi bir tam sayı olmalı.")
+    if not 0 <= s["startup_delay_minutes"] <= 120:
+        raise SettingsError("Açılış gecikmesi 0 ile 120 dakika arasında olmalı.")
     sec = s["security"]
     sec["auto_analyze"] = bool(sec["auto_analyze"])
     try:
@@ -169,6 +180,12 @@ def validate_settings(s: dict) -> dict:
         raise SettingsError("İndirme süresi bir tam sayı olmalı.")
     if not 1 <= src["time_budget_minutes"] <= 240:
         raise SettingsError("İndirme süresi 1 ile 240 dakika arasında olmalı.")
+    try:
+        src["background_rate_mb"] = float(src["background_rate_mb"])
+    except (TypeError, ValueError):
+        raise SettingsError("İndirme hızı sınırı bir sayı olmalı.")
+    if not 0 <= src["background_rate_mb"] <= 1000:
+        raise SettingsError("İndirme hızı sınırı 0 ile 1000 MB/s arasında olmalı.")
     r = s["review"]
     r["enabled"] = bool(r["enabled"])
     for key, lo, hi in (("max_diff_chars", 5000, 1_000_000), ("timeout_seconds", 20, 1800)):

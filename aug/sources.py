@@ -146,6 +146,12 @@ class Deferred(Exception):
 
 
 _deadline: float | None = None
+_rate: float = 0  # bytes per second, 0 = unlimited
+
+
+def set_rate(bytes_per_second: float) -> None:
+    global _rate
+    _rate = max(0.0, bytes_per_second)
 
 
 def set_deadline(seconds: float | None) -> None:
@@ -189,8 +195,13 @@ def download(url: str, dest: Path, max_bytes: int) -> int:
         if length and length.isdigit() and have + int(length) > max_bytes:
             raise TooLarge(have + int(length))
         size = have
+        t0 = time.monotonic()
         with open(part, "ab" if have else "wb") as f:
-            while chunk := r.read(1024 * 1024):
+            while chunk := r.read(256 * 1024 if _rate else 1024 * 1024):
+                if _rate:  # keep the connection free for the user
+                    ahead = (size - have + len(chunk)) / _rate - (time.monotonic() - t0)
+                    if ahead > 0:
+                        time.sleep(min(ahead, 5))
                 size += len(chunk)
                 if size > max_bytes:
                     f.close()

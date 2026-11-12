@@ -28,10 +28,16 @@ Documentation=file://{PROJECT_DIR}/README.md
 Type=oneshot
 # Wait (up to 5 min) for the network after boot/resume; the check copes without it anyway.
 ExecStartPre=/bin/sh -c 'for i in $(seq 30); do getent hosts aur.archlinux.org >/dev/null && exit 0; sleep 10; done; exit 0'
-ExecStart={AUG} check --notify
-TimeoutStartSec=45min
-Nice=10
+ExecStart={AUG} check --notify --background
+TimeoutStartSec=90min
+# Stay out of the way: the scheduler only gives this CPU and disk time nobody
+# else wants, and memory pressure throttles it instead of the desktop.
+Nice=19
+CPUSchedulingPolicy=idle
+CPUWeight=idle
 IOSchedulingClass=idle
+IOWeight=1
+MemoryHigh=1500M
 """
 
 

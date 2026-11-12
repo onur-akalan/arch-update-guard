@@ -49,7 +49,16 @@ Uygulama menüsünde **Güncelleme Bekçisi** olarak görünür. Komut satırın
 ~/vscode/arch-update-guard/bin/aug uninstall # ikisini de kaldır
 ```
 
-Zamanlayıcı (`arch-update-guard-check.timer`) ayarlardaki sıklıkta kontrol yapar ve bir şey varsa KDE bildirimi gösterir. Bildirimdeki "Panoyu aç" düğmesi panoyu açar. Güncellemeyi her zaman sen başlatırsın.
+Zamanlayıcı (`arch-update-guard-check.timer`) ayarlardaki sıklıkta kontrol yapar. Güncellemeyi her zaman sen başlatırsın.
+
+**Arka planda fark edilmemesi için:**
+
+- Kontrol en düşük öncelikte çalışır (`Nice=19`, CPU ve disk için `idle` sınıfı, `MemoryHigh=1500M`): yalnızca başka bir işin kullanmadığı CPU ve disk zamanını alır.
+- Bilgisayar açıldıktan sonra 10 dakika bekler (ayarlanabilir), böylece oturum açılışını yavaşlatmaz.
+- Kaynak indirmeleri zamanlanmış kontrolde 3 MB/s ile sınırlıdır (ayarlanabilir); elle başlatılan kontrolde sınır yoktur.
+- Sıradan bir gün (yeni AUR sürümü yok ya da kaynaklar zaten incelenmiş) yaklaşık 10-60 saniye ve birkaç saniye CPU sürer. Uzun süren tek iş, yeni bir AUR sürümünün kaynaklarının ilk kez indirilmesidir.
+
+**Bildirimler** varsayılan olarak yalnızca yeni ve önemli bir şey olduğunda gelir: tehlikeli ya da uyarılı bir AUR güncellemesi, okunmamış bir Arch haberi, düzeltmesi olmayan kritik/yüksek bir açık ya da bekleyen güncellemeyle kapanan bir açık. Her olay bir kez bildirilir. Sıradan güncellemeler sessizce panoda bekler; 14 günden uzun süre güncelleme yapılmazsa haftada bir hatırlatma gelir. Bildirimdeki "Panoyu aç" düğmesi panoyu açar.
 
 ## Yapay zekâ sağlayıcıları
 

@@ -10,8 +10,21 @@ import subprocess
 import sys
 import time
 
-from . import APP_ID, APP_NAME, check, schedule, server
+from . import APP_ID, APP_NAME, check, notify, schedule, server, sources, state
 from .config import LOG_FILE, ensure_dirs, load_settings
+
+
+def _background_setup(settings: dict) -> None:
+    """Scheduled run: let the desktop finish starting, keep the network free."""
+    try:
+        uptime = float(open("/proc/uptime").read().split()[0])
+    except (OSError, ValueError):
+        uptime = 1e9
+    wait = settings["startup_delay_minutes"] * 60 - uptime
+    if wait > 0:
+        logging.getLogger("aug").info("waiting %.0f s after boot", wait)
+        time.sleep(wait)
+    sources.set_rate(settings["sources"]["background_rate_mb"] * 1024 * 1024)
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -24,28 +37,22 @@ def _setup_logging(verbose: bool) -> None:
 
 
 def _notify(report: dict) -> None:
-    s = check.summary(report)
-    parts = []
-    if s["danger"]:
-        parts.append(f"⚠ {s['danger']} tehlikeli AUR paketi")
-    if s["warning"]:
-        parts.append(f"{s['warning']} uyarılı AUR paketi")
-    if s["unread_news"]:
-        parts.append(f"{s['unread_news']} okunmamış Arch haberi")
-    if s["repo"] or s["aur"]:
-        parts.append(f"{s['repo']} resmi, {s['aur']} AUR güncellemesi")
-    if s["vulns_fixable"]:
-        parts.append(f"{s['vulns_fixable']} güvenlik açığı bu güncellemeyle kapanıyor")
-    if report["errors"]:
-        parts.append(f"{len(report['errors'])} kontrol başarısız")
+    """Notify only about new, important things (see notify.py)."""
+    with state.mutate() as st:
+        fresh = notify.select(report, st, load_settings()["notify_level"])
+    logging.getLogger("aug").info("notify: %d new event(s)", len(fresh))
+    parts = [e["text"] for e in fresh[:6]]
+    if len(fresh) > 6:
+        parts.append(f"… ve {len(fresh) - 6} şey daha")
     if not parts or not shutil.which("notify-send"):
         return
-    urgency = "critical" if s["danger"] else "normal"
+    critical = any(e["critical"] for e in fresh)
+    urgency = "critical" if critical else "normal"
     # notify-send rejects non-ASCII text unless the locale is UTF-8.
     env = dict(os.environ, LC_ALL="C.UTF-8")
     try:
         r = subprocess.run(["notify-send", "-a", APP_NAME, "-i", "system-software-update", "-u", urgency,
-                            "-A", "open=Panoyu aç", "-w", "-t", "600000", APP_NAME, "\n".join(parts)],
+                            "-A", "open=Panoyu aç", "-w", "-t", "600000" if critical else "30000", APP_NAME, "\n".join(parts)],
                            capture_output=True, text=True, timeout=660, env=env)
         logging.getLogger("aug").info("notify-send rc=%s out=%r err=%r", r.returncode, r.stdout.strip(),
                                       r.stderr.strip()[:200])
@@ -86,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("check", help="güncellemeleri topla ve incele")
     c.add_argument("--notify", action="store_true", help="sonucu masaüstü bildirimi olarak göster")
     c.add_argument("--quiet", action="store_true")
+    c.add_argument("--background", action="store_true",
+                   help="zamanlanmış çalışma: açılıştan sonra bekle, indirme hızını sınırla")
     sub.add_parser("open", help="panoyu aç")
     sub.add_parser("serve", help="pano sunucusunu ön planda çalıştır")
     sub.add_parser("install", help="zamanlayıcıyı ve menü kısayolunu kur")
@@ -94,6 +103,8 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(args.verbose)
 
     if args.cmd == "check":
+        if args.background:
+            _background_setup(load_settings())
         try:
             report = check.run()
         except check.state.CheckRunning as e:

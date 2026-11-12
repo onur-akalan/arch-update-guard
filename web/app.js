@@ -814,7 +814,14 @@ function renderSettings() {
           <option value="chromium-app" ${s.browser === "chromium-app" ? "selected" : ""}>Chromium uygulama penceresi</option>
           <option value="default" ${s.browser === "default" ? "selected" : ""}>Varsayılan tarayıcı</option></select></label>
       </div>
-      <label class="check"><input type="checkbox" name="notifications" ${s.notifications ? "checked" : ""}> Kontrol bitince masaüstü bildirimi göster</label>
+      <label class="check"><input type="checkbox" name="notifications" ${s.notifications ? "checked" : ""}> Zamanlanmış kontrolden sonra masaüstü bildirimi göster</label>
+      <div class="field-row">
+        <label class="field"><span>Ne zaman bildirilsin</span><select class="input" name="notify_level">
+          <option value="important" ${s.notify_level === "important" ? "selected" : ""}>Yalnızca önemli ve yeni bir şey olunca</option>
+          <option value="all" ${s.notify_level === "all" ? "selected" : ""}>Güncelleme olan her kontrolde</option></select></label>
+        <label class="field"><span>Açılıştan sonra bekleme (dakika)</span><input class="input" type="number" min="0" max="120" name="startup_delay_minutes" value="${s.startup_delay_minutes}"></label>
+      </div>
+      <p class="help">"Önemli" şunlardır: tehlikeli ya da uyarılı bir AUR güncellemesi, okunmamış bir Arch haberi, düzeltmesi olmayan kritik/yüksek bir açık ya da bekleyen güncellemeyle kapanan bir açık. Aynı şey bir kez bildirilir. Sıradan güncellemeler sessizce panoda bekler; 14 günden uzun güncelleme yapılmazsa haftada bir hatırlatılır.</p>
       <p class="help">Bekleme süresi: yeni bir AUR sürümü, AUR'a yüklendikten bu kadar gün sonra otomatik olarak güncellemeye eklenir. Zararlı paketler genellikle ilk 1-3 gün içinde fark edilip kaldırılır. Süreyi beklemeden elle onaylayabilirsin.</p>
     </fieldset>
     <fieldset><legend>Yapay zekâ incelemesi</legend>
@@ -833,6 +840,7 @@ function renderSettings() {
       <div class="field-row">
         <label class="field"><span>En büyük dosya (MB)</span><input class="input" type="number" min="1" max="4096" name="src_max_file_mb" value="${s.sources.max_file_mb}"></label>
         <label class="field"><span>Kontrol başına indirme süresi (dakika)</span><input class="input" type="number" min="1" max="240" name="src_time_budget" value="${s.sources.time_budget_minutes}"></label>
+        <label class="field"><span>Zamanlanmış kontrolde hız sınırı (MB/s, 0 = sınırsız)</span><input class="input" type="number" min="0" max="1000" step="0.5" name="src_rate" value="${s.sources.background_rate_mb}"></label>
       </div>
       <p class="help">Hiçbir dosya çalıştırılmaz ya da diske açılmaz; arşivler bellekte okunur. Süre dolarsa indirme bir sonraki kontrolde kaldığı yerden sürer; inceleme bitene kadar paket otomatik seçilmez. Sağlama toplamı doğrulanan dosyalar saklanıp güncellemede yay'a verilir, ikinci kez indirilmez.</p>
     </fieldset>
@@ -889,13 +897,16 @@ function collectSettings() {
   s.schedule = f.schedule.value;
   s.browser = f.browser.value;
   s.notifications = f.notifications.checked;
+  s.notify_level = f.notify_level.value;
+  s.startup_delay_minutes = Number(f.startup_delay_minutes.value);
   s.review.enabled = f.review_enabled.checked;
   s.review.active_provider = f.active_provider.value;
   s.review.max_diff_chars = Number(f.max_diff_chars.value);
   s.review.timeout_seconds = Number(f.timeout_seconds.value);
   s.security = { auto_analyze: f.auto_analyze.checked, nvd_budget_seconds: Number(f.nvd_budget_seconds.value) };
   s.sources = { enabled: f.src_enabled.checked, baseline: f.src_baseline.checked,
-                max_file_mb: Number(f.src_max_file_mb.value), time_budget_minutes: Number(f.src_time_budget.value) };
+                max_file_mb: Number(f.src_max_file_mb.value), time_budget_minutes: Number(f.src_time_budget.value),
+                background_rate_mb: Number(f.src_rate.value) };
   s.providers = [...document.querySelectorAll("#providers .provider")].map((el) => {
     const p = { id: el.dataset.pid };
     el.querySelectorAll("[data-f]").forEach((i) => (p[i.dataset.f] = i.value));
