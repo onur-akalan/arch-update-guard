@@ -47,8 +47,13 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
 
     pkgbase = meta["PackageBase"]
     vcs = aur.is_vcs(name)
+    # Only what yay would actually install: `yay -S --needed` skips a package
+    # whose AUR version is not newer, which is common for -git packages whose
+    # locally built pkgver (r114) is ahead of the AUR's snapshot (r64). New AUR
+    # commits on such a package are reviewed once its AUR version moves ahead,
+    # because the diff always starts at the commit the installed build came from.
     update = aur.needs_update(name, installed, meta["Version"])
-    if not update and not vcs:
+    if not update:
         # Still record the maintainer baseline for later comparison.
         st["maintainers"].setdefault(pkgbase, meta.get("Maintainer"))
         return None
@@ -56,9 +61,6 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
     repo = aur.sync_mirror(pkgbase)
     target = aur.remote_head(repo)
     base, base_source = aur.find_base_commit(repo, pkgbase, name, installed)
-    if vcs and not update and base == target:
-        st["maintainers"].setdefault(pkgbase, meta.get("Maintainer"))
-        return None
 
     d = aur.diff(repo, base, target, settings["review"]["max_diff_chars"])
     commits = aur.commits_between(repo, base, target)
