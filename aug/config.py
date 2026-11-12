@@ -40,6 +40,7 @@ DEFAULT_SETTINGS: dict = {
     "browser": "chromium-app",  # chromium-app | default
     "security": {
         "auto_analyze": True,      # AI-assess active (not fixed / not stale) entries during checks
+        "news_ai": True,           # AI: does a recent Arch news item affect this machine, what to do
         "nvd_budget_seconds": 60,  # time per check spent fetching CVE details from NVD
         # Published lists of compromised AUR packages (one name per line).
         "compromised_lists": [
@@ -165,6 +166,7 @@ def validate_settings(s: dict) -> dict:
         raise SettingsError("Açılış gecikmesi 0 ile 120 dakika arasında olmalı.")
     sec = s["security"]
     sec["auto_analyze"] = bool(sec["auto_analyze"])
+    sec["news_ai"] = bool(sec["news_ai"])
     try:
         sec["nvd_budget_seconds"] = int(sec["nvd_budget_seconds"])
     except (TypeError, ValueError):

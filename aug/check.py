@@ -7,7 +7,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from . import aur, cve, deps, feeds, incidents, review, rules, runtime, sources, state, system, vulnai
+from . import aur, cve, deps, feeds, incidents, newsai, review, rules, runtime, sources, state, system, vulnai
 from .config import REPORT_FILE, RUNTIME_DIR, atomic_write_json, get_secret, load_settings, read_json
 
 log = logging.getLogger("aug")
@@ -243,6 +243,24 @@ def _run(settings: dict) -> dict:
         n["read"] = n["id"] in read
         n["since_last_upgrade"] = bool(last_up and n["published"]
                                        and datetime.fromisoformat(n["published"]) > last_up)
+    # AI: does it affect this machine? Recent items only; results are cached per item.
+    provider = settings["review"]["active_provider"]
+    pending_repo = {r["name"]: r["new"] for r in repo}
+    recent_cut = time.time() - 60 * 86400
+    for n in news:
+        n["ai"] = st["news_ai"].get(f"{n['id']}#{provider}")
+    if settings["security"]["news_ai"] and settings["review"]["enabled"]:
+        todo = [n for n in news if not n["ai"] and (n["since_last_upgrade"] or (
+            n["published"] and datetime.fromisoformat(n["published"]).timestamp() > recent_cut))][:6]
+        for i, n in enumerate(todo, 1):
+            _progress(f"Yapay zekâ haberi değerlendiriyor: {n['title'][:60]}", i, len(todo))
+            res = newsai.analyze(n, installed, pending_repo, settings)
+            if res["status"] == "ok":
+                st["news_ai"][f"{n['id']}#{provider}"] = res
+            n["ai"] = res
+            state.save(st)
+    ids = {n["id"] for n in news}
+    st["news_ai"] = {k: v for k, v in st["news_ai"].items() if k.split("#", 1)[0] in ids}
 
     _progress("Güvenlik açıkları kontrol ediliyor")
     pending = {r["name"]: r["new"] for r in repo}

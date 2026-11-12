@@ -16,7 +16,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, check, deps, review, rules, schedule, sources, state, updater, vulnai
+from . import __version__, check, deps, newsai, review, rules, schedule, sources, state, system, updater, vulnai
 from .config import (SERVER_FILE, WEB_DIR, SettingsError, atomic_write_json, delete_secret, get_secret,
                      load_settings, read_json, save_settings, set_secret, validate_settings)
 
@@ -32,6 +32,7 @@ class App:
         self.check_error: str | None = None
         self.review_busy: set[str] = set()
         self.vuln_busy: set[str] = set()
+        self.news_busy: set[str] = set()
         self.lock = threading.Lock()
 
     # -- background check -------------------------------------------------
@@ -80,6 +81,33 @@ class App:
         finally:
             with self.lock:
                 self.vuln_busy.discard(key)
+
+    def analyze_news(self, news_id: str, provider_id: str | None) -> dict:
+        report = check.load_report()
+        n = next((x for x in (report or {}).get("news", []) if x["id"] == news_id), None)
+        if not n:
+            raise ValueError("Haber güncel raporda yok.")
+        with self.lock:
+            if news_id in self.news_busy:
+                raise ValueError("Bu haber zaten değerlendiriliyor.")
+            self.news_busy.add(news_id)
+        try:
+            settings = load_settings()
+            pending = {r["name"]: r["new"] for r in report.get("repo", [])}
+            res = newsai.analyze(n, system.installed_packages(), pending, settings, provider_id)
+            pid = provider_id or settings["review"]["active_provider"]
+            if res["status"] == "ok":
+                with state.mutate() as st:
+                    st["news_ai"][f"{news_id}#{pid}"] = res
+            fresh = check.load_report()
+            for x in fresh["news"]:
+                if x["id"] == news_id:
+                    x["ai"] = res
+            atomic_write_json(check.REPORT_FILE, fresh)
+            return res
+        finally:
+            with self.lock:
+                self.news_busy.discard(news_id)
 
     def analyze_all(self) -> int:
         report = check.load_report() or {"vulns": []}
@@ -278,6 +306,7 @@ def make_handler(app: App, port: int):
                 "update": updater.update_status(),
                 "reviewing": sorted(app.review_busy),
                 "analyzing": sorted(app.vuln_busy),
+                "news_analyzing": sorted(app.news_busy),
             }
 
     # -- POST routes ------------------------------------------------------
@@ -359,6 +388,9 @@ def make_handler(app: App, port: int):
                                        "note": str(body.get("note") or "")[:500]}
         return {"ok": True}
 
+    def r_news_analyze(body):
+        return app.analyze_news(str(body.get("id") or ""), body.get("provider"))
+
     def r_vuln_analyze(body):
         return app.analyze_vuln(body.get("avg"), body.get("package"), body.get("provider"))
 
@@ -371,7 +403,7 @@ def make_handler(app: App, port: int):
             raise ValueError("Önce bir kontrol çalıştır.")
         return updater.launch_restart(report, body.get("units") or [])
 
-    ROUTES = {"/api/vuln/analyze": r_vuln_analyze, "/api/vuln/analyze-all": r_vuln_analyze_all,
+    ROUTES = {"/api/news/analyze": r_news_analyze, "/api/vuln/analyze": r_vuln_analyze, "/api/vuln/analyze-all": r_vuln_analyze_all,
               "/api/vuln/ack": r_vuln_ack, "/api/restart": r_restart, "/api/check": r_check, "/api/news/read": r_news_read, "/api/approve": r_approve,
               "/api/unapprove": r_unapprove, "/api/rereview": r_rereview, "/api/settings": r_settings,
               "/api/secret": r_secret, "/api/test-provider": r_test_provider, "/api/update": r_update}
@@ -408,7 +440,7 @@ def serve() -> None:
         while True:
             time.sleep(30)
             if (time.time() - app.last_request > IDLE_EXIT_SECONDS and not app.busy()
-                    and not app.review_busy and not app.vuln_busy):
+                    and not app.review_busy and not app.vuln_busy and not app.news_busy):
                 httpd.shutdown()
                 return
 

@@ -30,8 +30,18 @@ def events(report: dict, st: dict, level: str) -> list[dict]:
             out.append({"key": f"aur-warn:{a['name']}@{rc}", "critical": False,
                         "text": f"{a['name']}: güncellemede incelemen gereken bir değişiklik var"})
     unread = [n for n in report.get("news", []) if n.get("since_last_upgrade") and n["id"] not in st["news_read"]]
+    when_tr = {"before_update": "güncellemeden önce", "during_update": "güncelleme sırasında",
+               "after_update": "güncellemeden sonra"}
     for n in unread:
-        out.append({"key": f"news:{n['id']}", "critical": False, "text": f"Arch haberi: {n['title']}"})
+        ai = n.get("ai") or {}
+        if ai.get("status") == "ok" and ai["affects"] == "no" and ai["confidence"] != "low":
+            continue  # it does not apply here; it still waits on the dashboard
+        if ai.get("status") == "ok" and ai["affects"] == "yes":
+            when = when_tr.get(ai["when"])
+            text = f"Arch haberi seni etkiliyor{f' ({when} yapılacak bir şey var)' if when else ''}: {n['title']}"
+        else:
+            text = f"Arch haberi: {n['title']}"
+        out.append({"key": f"news:{n['id']}", "critical": False, "text": text})
     acks = st.get("vuln_ack", {})
     for v in report.get("vulns", []):
         ack = acks.get(f"{v['avg']}:{v['package']}")

@@ -144,7 +144,7 @@ function renderAlerts(d, r) {
     `${missing.map((a) => esc(a.name)).join(", ")}. AUR'dan kaldırılan paketler bazen zararlı oldukları için silinir; neden kaldırıldığına bak.`));
   const unread = r.news.filter((n) => n.since_last_upgrade && !n.read);
   if (unread.length) out.push(alertBox("warn", "📰", "Son güncellemenden sonra Arch haberi yayımlandı",
-    `Güncellemeden önce oku: <ul>${unread.map((n) => `<li><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a></li>`).join("")}</ul>`));
+    `Güncellemeden önce oku: <ul>${unread.map((n) => `<li><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a>${renderNewsAi(n.ai, true)}</li>`).join("")}</ul>`));
   const rt = r.runtime;
   if (rt && rt.reboot_recommended) out.push(alertBox("info", "↻", "Bilgisayarı yeniden başlatman öneriliyor",
     `${rt.kernel_updated ? "Çalışan çekirdek güncellendi. " : ""}${rt.reboot_packages.length ? `Açılıştan sonra güncellenen temel paketler: ${esc(rt.reboot_packages.join(", "))}. ` : ""}Ayrıntılar Sistem sekmesinde.`));
@@ -595,8 +595,26 @@ function renderNews(r) {
       <h3><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a></h3>
       <span class="muted small">${fmtDay(n.published)}${n.since_last_upgrade ? ` · <span class="badge warn">son güncellemenden sonra</span>` : ""}${n.read ? " · okundu" : ""}</span>
       <p>${esc(n.summary)}</p>
-      ${n.read ? "" : `<div><button class="btn sm ghost" data-act="read" data-id="${esc(n.id)}">Okundu say</button></div>`}
+      ${renderNewsAi(n.ai)}
+      <div class="pkg-actions">
+        ${n.read ? "" : `<button class="btn sm ghost" data-act="read" data-id="${esc(n.id)}">Okundu say</button>`}
+        <button class="btn sm ghost" data-act="news-analyze" data-id="${esc(n.id)}" ${(ui.data.news_analyzing || []).includes(n.id) ? "disabled" : ""}>${(ui.data.news_analyzing || []).includes(n.id) ? "Değerlendiriliyor…" : n.ai?.status === "ok" ? "Yeniden değerlendirt" : "Beni etkiliyor mu? (yapay zekâ)"}</button>
+      </div>
     </article>`).join("")}</div>`;
+}
+
+const AFFECTS = { yes: ["warn", "Seni etkiliyor"], maybe: ["neutral", "Etkileyebilir"], no: ["ok", "Seni etkilemiyor"] };
+const WHEN = { before_update: "güncellemeden önce", during_update: "güncelleme sırasında", after_update: "güncellemeden sonra", anytime: "istediğin zaman", none: "" };
+function renderNewsAi(ai, compact = false) {
+  if (!ai) return "";
+  if (ai.status !== "ok") return `<div class="verdict small"><b>Değerlendirme yapılamadı:</b> ${esc(ai.error || "")}</div>`;
+  const [cls, label] = AFFECTS[ai.affects] || ["neutral", ai.affects];
+  const when = WHEN[ai.when] ? ` <span class="badge neutral">${esc(WHEN[ai.when])}</span>` : "";
+  const steps = (ai.actions || []).map((a) => `<li>${esc(a.text)}${a.command ? `<code class="line">${esc(a.command)}</code>` : ""}</li>`).join("");
+  return `<div class="verdict"><span class="badge ${cls}">Yapay zekâ: ${label}</span>${when} ${esc(ai.summary)}
+    ${steps ? `<ol class="steps">${steps}</ol>` : ""}
+    ${compact ? "" : `<div class="who">${esc(ai.reasoning || "")}</div>`}
+    <div class="who">${esc(ai.provider || "")} · ${esc(ai.model || "")} · ${fmtDate(ai.at)} · doğrulanmamış yorum; komutları çalıştırmadan önce haberin kendisiyle karşılaştır</div></div>`;
 }
 
 function renderRuntime(r) {
@@ -678,6 +696,14 @@ document.addEventListener("click", async (ev) => {
     else if (act === "restart") await restartServices();
     else if (act === "ack") await ackVuln(t.dataset.avg, t.dataset.pkg);
     else if (act === "analyze") await analyzeVuln(t.dataset.avg, t.dataset.pkg);
+    else if (act === "news-analyze") {
+      toast("Haber değerlendiriliyor…");
+      const p = api("/api/news/analyze", { id: t.dataset.id });
+      setTimeout(refresh, 300);
+      const res = await p;
+      toast(res.status === "ok" ? "Değerlendirme tamamlandı" : res.error, res.status !== "ok");
+      await refresh();
+    }
     else if (act === "analyze-all") { const r = await api("/api/vuln/analyze-all", {}); toast(r.started ? `${r.started} kayıt sırayla değerlendiriliyor` : "Değerlendirilecek kayıt yok"); await refresh(); }
     else if (act === "unack") { await api("/api/vuln/ack", { avg: t.dataset.avg, package: t.dataset.pkg, undo: true }); await refresh(); }
   } catch (e) {
@@ -875,6 +901,7 @@ function renderSettings() {
       <p class="help">Hiçbir dosya çalıştırılmaz ya da diske açılmaz; arşivler bellekte okunur. Süre dolarsa indirme bir sonraki kontrolde kaldığı yerden sürer; inceleme bitene kadar paket otomatik seçilmez. Sağlama toplamı doğrulanan dosyalar saklanıp güncellemede yay'a verilir, ikinci kez indirilmez.</p>
     </fieldset>
     <fieldset><legend>Güvenlik açıkları</legend>
+      <label class="check"><input type="checkbox" name="news_ai" ${s.security.news_ai ? "checked" : ""}> Son Arch haberlerini yapay zekâya değerlendirt: bu bilgisayarı etkiliyor mu, ne yapmalıyım</label>
       <label class="check"><input type="checkbox" name="auto_analyze" ${s.security.auto_analyze ? "checked" : ""}> Her kontrolde etkin açıkları yapay zekâya otomatik değerlendirt (eski ve düzeltilmiş kayıtlar elle)</label>
       <div class="field-row" style="align-items:end">
         <label class="field"><span>NVD'den CVE ayrıntısı çekme süresi (saniye / kontrol)</span><input class="input" type="number" min="0" max="900" name="nvd_budget_seconds" value="${s.security.nvd_budget_seconds}"></label>
@@ -933,7 +960,9 @@ function collectSettings() {
   s.review.active_provider = f.active_provider.value;
   s.review.max_diff_chars = Number(f.max_diff_chars.value);
   s.review.timeout_seconds = Number(f.timeout_seconds.value);
-  s.security = { auto_analyze: f.auto_analyze.checked, nvd_budget_seconds: Number(f.nvd_budget_seconds.value) };
+  s.security = { ...s.security, auto_analyze: f.auto_analyze.checked, news_ai: f.news_ai.checked,
+                 nvd_budget_seconds: Number(f.nvd_budget_seconds.value) };
+  delete s.security.has_nvd_key;
   s.sources = { enabled: f.src_enabled.checked, baseline: f.src_baseline.checked, tag_compare: f.src_tag.checked,
                 max_file_mb: Number(f.src_max_file_mb.value), time_budget_minutes: Number(f.src_time_budget.value),
                 background_rate_mb: Number(f.src_rate.value) };
