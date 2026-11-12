@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Güncelleme Bekçisi</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5l-8-3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m8.5 12 2.5 2.5 4.5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div>
+        <h1>Güncelleme Bekçisi</h1>
+        <p id="status-line" class="muted">Yükleniyor…</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button id="btn-check" class="btn">Şimdi kontrol et</button>
+      <button id="btn-settings" class="btn ghost" aria-label="Ayarlar">Ayarlar</button>
+    </div>
+  </header>
+  <div id="progress" class="progress" hidden>
+    <div class="progress-bar"><span id="progress-fill"></span></div>
+    <span id="progress-text"></span>
+  </div>
+
+  <main id="app"></main>
+
+  <dialog id="dlg-settings" class="dialog wide">
+    <form method="dialog" id="settings-form" novalidate>
+      <header class="dialog-head">
+        <h2>Ayarlar</h2>
+        <button value="cancel" class="icon-btn" aria-label="Kapat">✕</button>
+      </header>
+      <div id="settings-body" class="dialog-body"></div>
+      <footer class="dialog-foot">
+        <span id="settings-msg" class="muted"></span>
+        <button value="cancel" class="btn ghost">Vazgeç</button>
+        <button id="btn-save-settings" value="default" class="btn primary">Kaydet</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-confirm" class="dialog">
+    <form method="dialog" id="confirm-form">
+      <header class="dialog-head"><h2 id="confirm-title">Onay</h2></header>
+      <div class="dialog-body" id="confirm-body"></div>
+      <footer class="dialog-foot">
+        <button value="cancel" class="btn ghost">Vazgeç</button>
+        <button value="ok" id="confirm-ok" class="btn danger">Onayla</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

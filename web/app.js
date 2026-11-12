@@ -1,0 +1,667 @@
+"use strict";
+
+// ---------- helpers ----------
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtDate = (ts) => ts ? new Date(typeof ts === "number" ? ts * 1000 : ts).toLocaleString("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+const fmtDay = (ts) => ts ? new Date(typeof ts === "number" ? ts * 1000 : ts).toLocaleDateString("tr-TR", { day: "numeric", month: "long", year: "numeric" }) : "—";
+function ago(ts) {
+  if (!ts) return "hiç";
+  const s = Math.round(Date.now() / 1000 - ts);
+  if (s < 60) return "az önce";
+  if (s < 3600) return `${Math.floor(s / 60)} dk önce`;
+  if (s < 86400) return `${Math.floor(s / 3600)} sa önce`;
+  return `${Math.floor(s / 86400)} gün önce`;
+}
+function until(ts) {
+  const s = Math.round(ts - Date.now() / 1000);
+  if (s <= 0) return "şimdi";
+  if (s < 3600) return `${Math.ceil(s / 60)} dk`;
+  if (s < 86400) return `${Math.round(s / 3600)} sa`;
+  return `${Math.round(s / 86400 * 10) / 10} gün`;
+}
+
+async function api(path, body) {
+  const opt = body === undefined ? {} : {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Requested-With": "aug" },
+    body: JSON.stringify(body),
+  };
+  const r = await fetch(path, opt);
+  let data = null;
+  try { data = await r.json(); } catch { /* non-JSON */ }
+  if (!r.ok) throw new Error((data && data.error) || `HTTP ${r.status}`);
+  return data;
+}
+
+let toastTimer;
+function toast(msg, isError = false) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.className = "show" + (isError ? " error" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.className = ""), isError ? 6000 : 3000);
+}
+
+// ---------- state ----------
+const ui = {
+  data: null,
+  tab: "aur",
+  selected: new Map(),   // "name@target" -> bool (user's explicit choice)
+  newsAck: false,
+  repoFilter: "",
+  openDetails: new Set(),
+  pollTimer: null,
+};
+
+const STATUS = {
+  clean: ["ok", "Temiz"],
+  warning: ["warn", "Dikkat"],
+  danger: ["danger", "Tehlikeli"],
+  unreviewed: ["neutral", "İncelenmedi"],
+  missing: ["warn", "AUR'da yok"],
+  error: ["danger", "Hata"],
+};
+const SEV = { high: ["danger", "Yüksek"], medium: ["warn", "Orta"], low: ["info", "Düşük"], info: ["info", "Bilgi"] };
+const AVG_SEV = { Critical: "danger", High: "danger", Medium: "warn", Low: "info", Unknown: "neutral" };
+const AVG_SEV_TR = { Critical: "Kritik", High: "Yüksek", Medium: "Orta", Low: "Düşük", Unknown: "Bilinmiyor" };
+
+const keyOf = (a) => `${a.name}@${a.target}`;
+const canSelect = (a) => a.target && (a.approved || a.auto_ok);
+const isSelected = (a) => canSelect(a) && (ui.selected.has(keyOf(a)) ? ui.selected.get(keyOf(a)) : true);
+
+// ---------- polling ----------
+async function refresh() {
+  try {
+    ui.data = await api("/api/state");
+    render();
+  } catch (e) {
+    $("#status-line").textContent = "Sunucuya ulaşılamıyor: " + e.message;
+  }
+  schedulePoll();
+}
+function schedulePoll() {
+  clearTimeout(ui.pollTimer);
+  const d = ui.data;
+  const fast = d && (d.busy || d.update?.running || (d.reviewing || []).length);
+  ui.pollTimer = setTimeout(refresh, fast ? 2000 : 30000);
+}
+
+// ---------- rendering ----------
+function render() {
+  const d = ui.data;
+  const r = d.report;
+  renderTop(d);
+  const app = $("#app");
+  if (!r) {
+    app.innerHTML = `<div class="card card-pad empty">
+      <h2>Henüz kontrol yapılmadı</h2>
+      <p>İlk kontrol resmi depoları, AUR paketlerini, Arch haberlerini ve güvenlik açıklarını tarar.</p>
+      <button class="btn primary" data-act="check" ${d.busy ? "disabled" : ""}>İlk kontrolü başlat</button></div>`;
+    return;
+  }
+  const scrollY = window.scrollY;
+  app.innerHTML = renderAlerts(d, r) + renderStats(r) + renderPlan(d, r) + renderTabs(r);
+  window.scrollTo(0, scrollY);
+}
+
+function renderTop(d) {
+  const r = d.report;
+  const line = r
+    ? `Son kontrol ${ago(r.generated_at)} (${fmtDate(r.generated_at)}) · ${r.system.installed_count} paket kurulu`
+    : "Henüz kontrol yapılmadı";
+  $("#status-line").textContent = line;
+  $("#btn-check").disabled = d.busy;
+  $("#btn-check").textContent = d.busy ? "Kontrol ediliyor…" : "Şimdi kontrol et";
+  const p = $("#progress");
+  p.hidden = !d.busy;
+  if (d.busy) {
+    const pr = d.progress || {};
+    const fill = $("#progress-fill");
+    if (pr.total) {
+      fill.className = "";
+      fill.style.width = `${Math.round((pr.done / pr.total) * 100)}%`;
+    } else {
+      fill.className = "indeterminate";
+      fill.style.width = "";
+    }
+    $("#progress-text").textContent = (pr.message || "Hazırlanıyor") + (pr.total ? ` (${pr.done}/${pr.total})` : "");
+  }
+}
+
+function renderAlerts(d, r) {
+  const out = [];
+  const danger = r.aur.filter((a) => a.status === "danger");
+  if (danger.length) out.push(alertBox("danger", "⛔", `${danger.length} AUR güncellemesinde tehlikeli bulgu var`,
+    `İncelemeden kurma: ${danger.map((a) => `<b>${esc(a.name)}</b>`).join(", ")}. Ayrıntılar AUR sekmesinde.`));
+  const missing = r.aur.filter((a) => a.status === "missing");
+  if (missing.length) out.push(alertBox("warn", "⚠", "Kurulu bazı paketler artık AUR'da yok",
+    `${missing.map((a) => esc(a.name)).join(", ")}. AUR'dan kaldırılan paketler bazen zararlı oldukları için silinir; neden kaldırıldığına bak.`));
+  const unread = r.news.filter((n) => n.since_last_upgrade && !n.read);
+  if (unread.length) out.push(alertBox("warn", "📰", "Son güncellemenden sonra Arch haberi yayımlandı",
+    `Güncellemeden önce oku: <ul>${unread.map((n) => `<li><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a></li>`).join("")}</ul>`));
+  if (r.system.reboot_needed) out.push(alertBox("info", "↻", "Yeniden başlatma bekliyor", "Çalışan çekirdek güncellendi; değişikliklerin etkin olması için bilgisayarı yeniden başlat."));
+  if (d.check_error) out.push(alertBox("danger", "✕", "Son kontrol başarısız oldu", esc(d.check_error)));
+  for (const e of r.errors) out.push(alertBox("warn", "⚠", "Kontrolün bir bölümü tamamlanamadı", esc(e)));
+  const last = d.update?.last;
+  if (last && last.finished && Date.now() / 1000 - last.finished < 3600) {
+    const ok = last.repo_rc === 0 && (last.aur_rc === 0 || last.aur_rc === -1);
+    out.push(alertBox(ok ? "info" : "danger", ok ? "✓" : "✕", ok ? "Güncelleme tamamlandı" : "Güncelleme hatayla bitti",
+      `${fmtDate(last.finished)} · pacman kodu ${last.repo_rc}, yay kodu ${last.aur_rc}${last.aur ? " · AUR: " + esc(last.aur) : ""}`));
+  }
+  return out.length ? `<section class="alerts">${out.join("")}</section>` : "";
+}
+const alertBox = (kind, icon, title, body) =>
+  `<div class="alert ${kind}"><span class="alert-icon">${icon}</span><div><b>${title}</b><div class="small">${body}</div></div></div>`;
+
+function renderStats(r) {
+  const imp = r.repo.filter((x) => x.important).length;
+  const cve = r.repo.filter((x) => x.fixes_cve).length;
+  const aurUp = r.aur.filter((a) => a.new_version);
+  const bad = r.aur.filter((a) => ["danger", "warning", "missing"].includes(a.status)).length;
+  const unrev = r.aur.filter((a) => a.status === "unreviewed").length;
+  const highV = r.vulns.filter((v) => ["Critical", "High"].includes(v.severity)).length;
+  const fixable = r.vulns.filter((v) => v.fix_pending).length;
+  const unread = r.news.filter((n) => n.since_last_upgrade && !n.read).length;
+  const latest = r.news[0];
+  const stat = (tab, label, value, sub) =>
+    `<button class="card stat" data-tab="${tab}"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></button>`;
+  return `<section class="stats">
+    ${stat("repo", "Resmi depo güncellemesi", r.repo.length, `${imp ? `<span>${imp} önemli</span>` : ""}${cve ? `<span>${cve} güvenlik düzeltmesi</span>` : ""}${!imp && !cve ? "imzalı resmi paketler" : ""}`)}
+    ${stat("aur", "AUR güncellemesi", aurUp.length, bad ? `<span class="badge warn">${bad} dikkat</span>` : unrev ? `<span>${unrev} incelenmedi</span>` : "sorun bulunmadı")}
+    ${stat("vulns", "Bilinen güvenlik açığı", r.vulns.length, `${highV ? `<span>${highV} yüksek/kritik</span>` : ""}<span>${fixable} bu güncellemeyle kapanıyor</span>`)}
+    ${stat("news", "Yeni Arch haberi", unread, unread ? "son güncellemenden sonra yayımlandı" : latest ? `son haber: ${fmtDay(latest.published)}` : "haber alınamadı")}
+  </section>`;
+}
+
+function renderPlan(d, r) {
+  const aur = r.aur.filter((a) => a.target);
+  const sel = aur.filter(isSelected);
+  const unread = r.news.filter((n) => n.since_last_upgrade && !n.read);
+  const running = d.update?.running;
+  const nothing = !r.repo.length && !sel.length;
+  const blocked = (unread.length && !ui.newsAck) || running || d.busy || nothing;
+  const stale = Date.now() / 1000 - r.generated_at > 6 * 3600;
+  const rows = aur.map((a) => {
+    const [cls, label] = STATUS[a.status] || ["neutral", a.status];
+    let why;
+    if (a.approved) why = "Elle onaylandı";
+    else if (a.auto_ok) why = "İnceleme temiz, bekleme süresi doldu";
+    else if (a.status === "clean" && a.held) why = `Bekleme süresinde: ${until(a.hold_until)} sonra hazır (${fmtDate(a.hold_until)})`;
+    else if (a.status === "unreviewed") why = "İncelenmedi; diff'e bakıp elle onaylaman gerekiyor";
+    else why = "Bulgular var; incelemeden onaylanamaz";
+    return `<label class="plan-row">
+      <input type="checkbox" data-sel="${esc(keyOf(a))}" ${isSelected(a) ? "checked" : ""} ${canSelect(a) ? "" : "disabled"}>
+      <span><b>${esc(a.name)}</b> <span class="ver">${esc(a.installed)} → <b>${esc(a.new_version)}</b></span></span>
+      <span class="badge ${cls}">${label}</span>
+      <span class="why">${why}</span></label>`;
+  }).join("");
+  return `<section class="card card-pad">
+    <div class="plan">
+      <div>
+        <h2>Güncelleme planı</h2>
+        <p class="muted small" style="margin:4px 0 0">${r.repo.length} resmi depo paketinin hepsi güncellenir (Arch'ta kısmi güncelleme desteklenmez). AUR paketlerinden yalnızca işaretlediklerin kurulur.</p>
+        ${aur.length ? `<div class="plan-list">${rows}</div>` : `<p class="muted small">Bekleyen AUR güncellemesi yok.</p>`}
+      </div>
+      <div class="plan-side">
+        <div class="checks">
+          <span>${r.system.autosnap ? "✓ Timeshift kurulumdan önce anlık görüntü alacak" : "⚠ timeshift-autosnap bulunamadı"}</span>
+          <span>${r.system.disk_free_gb > 10 ? "✓" : "⚠"} ${r.system.disk_free_gb} GB boş alan</span>
+          <span>${stale ? "⚠ Rapor 6 saatten eski, önce yeniden kontrol et" : `✓ Rapor güncel (${ago(r.generated_at)})`}</span>
+        </div>
+        ${unread.length ? `<label class="ack"><input type="checkbox" id="news-ack" ${ui.newsAck ? "checked" : ""}><span>Son güncellememden sonra yayımlanan ${unread.length} Arch haberini okudum.</span></label>` : ""}
+        <button class="btn primary lg" data-act="update" ${blocked || stale ? "disabled" : ""}>
+          ${running ? "Güncelleme sürüyor…" : nothing ? "Güncellenecek bir şey yok" : `Güncellemeyi başlat (${r.repo.length + sel.length} paket)`}</button>
+        <span class="muted small">Konsole penceresinde açılır; parolanı ve pacman sorularını orada yanıtlarsın.</span>
+      </div>
+    </div>
+  </section>`;
+}
+
+function renderTabs(r) {
+  const tabs = [
+    ["aur", "AUR", r.aur.length],
+    ["repo", "Resmi depo", r.repo.length],
+    ["vulns", "Güvenlik", r.vulns.length],
+    ["news", "Haberler", r.news.filter((n) => n.since_last_upgrade && !n.read).length || ""],
+    ["system", "Sistem", r.system.pacnew.length || ""],
+  ];
+  const body = { aur: renderAur, repo: renderRepo, vulns: renderVulns, news: renderNews, system: renderSystem }[ui.tab](r);
+  return `<section class="card">
+    <nav class="tabs" role="tablist">${tabs.map(([id, label, n]) =>
+      `<button class="tab ${ui.tab === id ? "active" : ""}" data-tab="${id}" role="tab">${label}${n !== "" && n !== undefined ? `<span class="count">${n}</span>` : ""}</button>`).join("")}</nav>
+    <div class="tab-body">${body}</div></section>`;
+}
+
+function renderAur(r) {
+  if (!r.aur.length) {
+    return `<div class="empty">Bekleyen AUR güncellemesi yok. ${r.system.foreign_count} AUR paketinin hepsi güncel ve AUR'da duruyor.</div>`;
+  }
+  const order = { danger: 0, error: 1, missing: 2, warning: 3, unreviewed: 4, clean: 5 };
+  const items = [...r.aur].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || a.name.localeCompare(b.name));
+  const reviewing = new Set(ui.data.reviewing || []);
+  return `<div class="pkgs">${items.map((a) => renderPkg(a, reviewing.has(a.name), r)).join("")}</div>
+    <p class="note">İnceleme iki katmanlıdır: sabit kural taraması her zaman çalışır ve yapay zekâ kararı bir kural bulgusunu asla temizleyemez. Yapay zekânın gerekçeleri doğrulanmamış yorumdur; paketin yazdığı metinden etkilenmiş olabilir.</p>`;
+}
+
+function renderPkg(a, reviewing, r) {
+  const [cls, label] = STATUS[a.status] || ["neutral", a.status];
+  if (a.status === "missing" || a.status === "error") {
+    return `<article class="pkg ${a.status}"><div class="pkg-head"><span class="pkg-name">${esc(a.name)}</span>
+      <span class="ver">kurulu <b>${esc(a.installed)}</b></span><span class="badge ${cls}">${label}</span></div>
+      <div class="pkg-body">${a.error ? `<div class="verdict">${esc(a.error)}</div>` : ""}${renderFindings(a.findings)}</div></article>`;
+  }
+  const llm = a.llm;
+  let verdict;
+  if (!llm) verdict = `<div class="verdict">Yapay zekâ incelemesi kapalı. Diff'e kendin bakıp karar ver.</div>`;
+  else if (llm.status !== "ok") verdict = `<div class="verdict"><b>İnceleme yapılamadı:</b> ${esc(llm.error)}<div class="who">Bu paket incelenmemiş sayılır ve onayın olmadan kurulmaz.</div></div>`;
+  else {
+    const vmap = { clean: ["ok", "Temiz"], suspicious: ["warn", "Şüpheli"], malicious: ["danger", "Zararlı"] };
+    const [vc, vl] = vmap[llm.verdict];
+    const cost = llm.usage?.cost_usd != null ? ` · $${llm.usage.cost_usd.toFixed(3)}` : llm.usage?.input_tokens ? ` · ${llm.usage.input_tokens + llm.usage.output_tokens} token` : "";
+    verdict = `<div class="verdict"><span class="badge ${vc}">Yapay zekâ: ${vl}</span> ${esc(llm.summary)}
+      ${llm.findings?.length ? `<ul class="findings" style="margin-top:8px">${llm.findings.map((f) => findingRow(f.severity, f.explanation, f.file, f.excerpt)).join("")}</ul>` : ""}
+      <div class="who">${esc(llm.provider)} · ${esc(llm.model || "")} · ${llm.seconds ?? "?"} sn${cost} · ${fmtDate(llm.at)} · doğrulanmamış yorum</div></div>`;
+  }
+  const holdBadge = a.held ? `<span class="badge neutral" title="${esc(fmtDate(a.hold_until))}">⏳ ${until(a.hold_until)} bekleme</span>` : "";
+  const apprBadge = a.approved ? `<span class="badge accent">✓ Onaylandı</span>` : "";
+  const dk = `diff:${keyOf(a)}`;
+  const providers = (ui.settings?.providers || []);
+  return `<article class="pkg ${a.status}">
+    <div class="pkg-head">
+      <span class="pkg-name">${esc(a.name)}</span>
+      <span class="ver">${esc(a.installed)} → <b>${esc(a.new_version)}</b>${a.vcs ? " · geliştirme sürümü" : ""}</span>
+      <span class="badge ${cls}">${label}</span>${holdBadge}${apprBadge}
+      <span class="spacer"></span>
+      <a class="small" href="${esc(a.aur_url)}" target="_blank" rel="noopener">AUR sayfası ↗</a>
+    </div>
+    <div class="pkg-body">
+      ${verdict}
+      ${renderFindings(a.findings)}
+      <div class="meta-grid">
+        <span>Bakımcı: <b>${esc(a.maintainer || "yok")}</b>${a.known_maintainer && a.known_maintainer !== a.maintainer ? ` (önceden ${esc(a.known_maintainer)})` : ""}</span>
+        <span>Oy: <b>${a.votes ?? "?"}</b></span>
+        <span>AUR'a ilk ekleniş: <b>${fmtDay(a.first_submitted)}</b></span>
+        <span>Bu sürüm: <b>${fmtDate(a.last_modified)}</b></span>
+        <span>Karşılaştırma: <b>${a.diff?.base ? esc(a.diff.base.slice(0, 10)) : "yok"}</b> → <b>${esc(a.target.slice(0, 10))}</b> (${esc(a.base_source)})</span>
+      </div>
+      <div class="pkg-actions">
+        ${a.approved
+          ? `<button class="btn sm" data-act="unapprove" data-name="${esc(a.name)}">Onayı kaldır</button>`
+          : `<button class="btn sm ${a.status === "clean" ? "" : "primary"}" data-act="approve" data-name="${esc(a.name)}" data-commit="${esc(a.target)}" data-status="${a.status}">
+              ${a.status === "clean" && a.held ? "Beklemeden onayla" : a.status === "clean" ? "Onayla" : "İnceledim, onayla"}</button>`}
+        <button class="btn sm ghost" data-act="rereview" data-name="${esc(a.name)}" ${reviewing ? "disabled" : ""}>${reviewing ? "İnceleniyor…" : "Yeniden incelet"}</button>
+        ${providers.length > 1 ? `<select class="input" style="height:28px" data-provider-for="${esc(a.name)}">${providers.map((p) =>
+          `<option value="${esc(p.id)}" ${p.id === ui.settings.review.active_provider ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>` : ""}
+      </div>
+    </div>
+    <details class="more" data-key="${esc(dk)}" ${ui.openDetails.has(dk) ? "open" : ""}>
+      <summary>Diff'i ve commit'leri göster (${a.diff.chars.toLocaleString("tr-TR")} karakter${a.diff.truncated ? ", kısaltıldı" : ""})</summary>
+      <div class="more-body">
+        <ul class="commits">${(a.commits || []).map((c) => `<li><code>${esc(c.hash.slice(0, 10))}</code> ${esc(c.subject)} <span class="muted">— ${esc(c.author)} &lt;${esc(c.email)}&gt;, ${fmtDate(c.time)}</span></li>`).join("")}</ul>
+        ${ui.openDetails.has(dk) ? renderDiff(a.diff.text) : ""}
+      </div>
+    </details>
+  </article>`;
+}
+
+function renderFindings(findings) {
+  const list = (findings || []);
+  if (!list.length) return "";
+  return `<ul class="findings">${list.map((f) => findingRow(f.severity, f.title + (f.detail ? `: ${f.detail}` : ""), f.file, f.line)).join("")}</ul>`;
+}
+function findingRow(sev, text, file, line) {
+  const [cls, label] = SEV[sev] || ["neutral", sev];
+  return `<li class="finding"><span class="badge ${cls}">${label}</span><div>${esc(text)}${file ? ` <span class="muted">(${esc(file)})</span>` : ""}${line ? `<code class="line">${esc(line)}</code>` : ""}</div></li>`;
+}
+
+function renderDiff(text) {
+  const lines = text.split("\n").map((l) => {
+    let c = "";
+    if (l.startsWith("diff --git")) c = "file";
+    else if (l.startsWith("+++") || l.startsWith("---") || l.startsWith("index ") || l.startsWith("new file") || l.startsWith("deleted file")) c = "file";
+    else if (l.startsWith("@@")) c = "hunk";
+    else if (l.startsWith("+")) c = "add";
+    else if (l.startsWith("-")) c = "del";
+    return `<span class="l ${c}">${esc(l)}</span>`;
+  });
+  return `<pre class="diff">${lines.join("")}</pre>`;
+}
+
+function renderRepo(r) {
+  if (!r.repo.length) return `<div class="empty">Resmi depolarda bekleyen güncelleme yok.</div>`;
+  const f = ui.repoFilter.toLowerCase();
+  const rows = [...r.repo]
+    .sort((a, b) => (b.important - a.important) || (b.fixes_cve - a.fixes_cve) || a.name.localeCompare(b.name))
+    .filter((x) => !f || x.name.includes(f));
+  return `<div class="toolbar"><input class="input" id="repo-filter" placeholder="Paket ara…" value="${esc(ui.repoFilter)}" style="width:240px">
+      <span class="muted small">${rows.length} / ${r.repo.length} paket · Resmi paketler Arch geliştiricileri tarafından imzalanır ve pacman imzayı doğrular.</span></div>
+    <div class="table-wrap"><table><thead><tr><th>Paket</th><th>Depo</th><th>Kurulu</th><th>Yeni</th><th>Not</th></tr></thead><tbody>
+    ${rows.map((x) => `<tr><td><b>${esc(x.name)}</b></td><td class="muted">${esc(x.repo)}</td><td class="mono">${esc(x.old)}</td><td class="mono">${esc(x.new)}</td>
+      <td><div class="tags">${x.fixes_cve ? `<span class="badge ok">güvenlik düzeltmesi</span>` : ""}${x.important ? `<span class="badge accent">önemli</span>` : ""}${x.major ? `<span class="badge warn">ana sürüm</span>` : ""}${x.reboot ? `<span class="badge neutral">yeniden başlatma</span>` : ""}</div></td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+
+function renderVulns(r) {
+  if (!r.vulns.length) return `<div class="empty">Kurulu sürümleri etkileyen kayıtlı bir güvenlik açığı yok.</div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Önem</th><th>Paket</th><th>Kurulu</th><th>Düzeltme</th><th>Tür</th><th>Kayıt</th></tr></thead><tbody>
+    ${r.vulns.map((v) => `<tr><td><span class="badge ${AVG_SEV[v.severity] || "neutral"}">${AVG_SEV_TR[v.severity] || esc(v.severity)}</span></td>
+      <td><b>${esc(v.package)}</b></td><td class="mono">${esc(v.installed)}</td>
+      <td>${v.fix_pending ? `<span class="badge ok">güncellemede: ${esc(v.fixed)}</span>` : v.fixed ? `<span class="mono">${esc(v.fixed)}</span>` : `<span class="muted">henüz yok</span>`}</td>
+      <td class="muted">${esc(v.type)}</td>
+      <td><a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.avg)}</a> <span class="muted small">${v.issue_count} CVE</span></td></tr>`).join("")}
+    </tbody></table></div>
+    <p class="note">Kaynak: Arch Linux güvenlik takipçisi (security.archlinux.org). Takipçi gönüllülerce tutulur ve eksik ya da gecikmeli olabilir; "henüz yok" yazan açıklar için yapılacak bir şey yoksa Arch'ın düzeltmeyi yayımlamasını beklemek gerekir.</p>`;
+}
+
+function renderNews(r) {
+  if (!r.news.length) return `<div class="empty">Haber alınamadı.</div>`;
+  const unread = r.news.filter((n) => !n.read);
+  return `<div class="toolbar">${unread.length ? `<button class="btn sm" data-act="read-all">Tümünü okundu say</button>` : ""}<a class="small" href="https://archlinux.org/news/" target="_blank" rel="noopener">archlinux.org/news ↗</a></div>
+    <div class="news">${r.news.map((n) => `<article class="news-item ${n.read || !n.since_last_upgrade ? "" : "unread"}">
+      <h3><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a></h3>
+      <span class="muted small">${fmtDay(n.published)}${n.since_last_upgrade ? ` · <span class="badge warn">son güncellemenden sonra</span>` : ""}${n.read ? " · okundu" : ""}</span>
+      <p>${esc(n.summary)}</p>
+      ${n.read ? "" : `<div><button class="btn sm ghost" data-act="read" data-id="${esc(n.id)}">Okundu say</button></div>`}
+    </article>`).join("")}</div>`;
+}
+
+function renderSystem(r) {
+  const s = r.system;
+  return `<dl class="kv">
+      <dt>Son tam güncelleme</dt><dd>${s.last_upgrade ? fmtDate(s.last_upgrade) : "bulunamadı"}</dd>
+      <dt>Kurulu paket</dt><dd>${s.installed_count} (${s.foreign_count} AUR / depo dışı)</dd>
+      <dt>Boş disk alanı</dt><dd>${s.disk_free_gb} GB</dd>
+      <dt>Timeshift otomatik anlık görüntü</dt><dd>${s.autosnap ? "kurulu" : "kurulu değil"}</dd>
+      <dt>Yeniden başlatma</dt><dd>${s.reboot_needed ? "gerekiyor (çekirdek güncellendi)" : "gerekmiyor"}</dd>
+      <dt>Son kontrol süresi</dt><dd>${r.duration} sn</dd>
+      <dt>İnceleme sağlayıcısı</dt><dd>${r.review_provider ? esc(r.review_provider) : "kapalı"}</dd>
+      <dt>AUR bekleme süresi</dt><dd>${r.hold_days} gün</dd>
+    </dl>
+    <h3 style="margin-top:20px">Birleştirilmeyi bekleyen yapılandırma dosyaları (.pacnew)</h3>
+    ${s.pacnew.length ? `<p class="note">Paket yeni bir varsayılan yapılandırma getirdiğinde, senin değiştirdiğin dosyanın yanına <code>.pacnew</code> olarak bırakılır. Farkları birleştirmek için terminalde <code>sudo DIFFPROG="kdiff3" pacdiff</code> ya da <code>sudo pacdiff</code> çalıştır.</p>
+      <ul class="mono small">${s.pacnew.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : `<p class="muted">Yok.</p>`}`;
+}
+
+// ---------- actions ----------
+document.addEventListener("click", async (ev) => {
+  const t = ev.target.closest("[data-tab],[data-act]");
+  if (!t) return;
+  if (t.dataset.tab) {
+    ui.tab = t.dataset.tab;
+    render();
+    if (t.classList.contains("stat")) document.querySelector(".tabs")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  const act = t.dataset.act;
+  try {
+    if (act === "check") await startCheck();
+    else if (act === "read") { await api("/api/news/read", { ids: [t.dataset.id] }); await refresh(); }
+    else if (act === "read-all") { await api("/api/news/read", { ids: ui.data.report.news.map((n) => n.id) }); await refresh(); }
+    else if (act === "approve") await approve(t.dataset.name, t.dataset.commit, t.dataset.status);
+    else if (act === "unapprove") { await api("/api/unapprove", { name: t.dataset.name }); toast("Onay kaldırıldı"); await refresh(); }
+    else if (act === "rereview") await rereview(t.dataset.name);
+    else if (act === "update") await startUpdate();
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+document.addEventListener("change", (ev) => {
+  const t = ev.target;
+  if (t.dataset.sel) { ui.selected.set(t.dataset.sel, t.checked); render(); }
+  else if (t.id === "news-ack") { ui.newsAck = t.checked; render(); }
+});
+document.addEventListener("input", (ev) => {
+  if (ev.target.id === "repo-filter") {
+    ui.repoFilter = ev.target.value;
+    const pos = ev.target.selectionStart;
+    render();
+    const el = $("#repo-filter");
+    el.focus();
+    el.setSelectionRange(pos, pos);
+  }
+});
+document.addEventListener("toggle", (ev) => {
+  const d = ev.target;
+  if (d.matches?.("details.more")) {
+    const k = d.dataset.key;
+    if (d.open) ui.openDetails.add(k); else ui.openDetails.delete(k);
+    if (d.open && !d.querySelector(".diff")) render();
+  }
+}, true);
+
+$("#btn-check").addEventListener("click", () => startCheck().catch((e) => toast(e.message, true)));
+
+async function startCheck() {
+  const r = await api("/api/check", {});
+  toast(r.started ? "Kontrol başladı" : "Bir kontrol zaten çalışıyor");
+  await refresh();
+}
+
+async function rereview(name) {
+  const sel = document.querySelector(`[data-provider-for="${CSS.escape(name)}"]`);
+  const provider = sel ? sel.value : undefined;
+  toast(`${name} yeniden inceleniyor…`);
+  const p = api("/api/rereview", { name, provider });
+  setTimeout(refresh, 300);
+  const res = await p;
+  toast(res.status === "ok" ? `${name}: inceleme tamamlandı` : `${name}: ${res.error}`, res.status !== "ok");
+  await refresh();
+}
+
+async function approve(name, commit, status) {
+  if (status === "clean") {
+    await api("/api/approve", { name, commit });
+    toast(`${name} onaylandı`);
+    return refresh();
+  }
+  const warn = status === "danger"
+    ? "Bu güncellemede <b>tehlikeli</b> bulgular var. Bulguların yanlış alarm olduğundan emin değilsen onaylama."
+    : status === "unreviewed"
+      ? "Bu güncelleme otomatik olarak incelenemedi. Diff'i kendin okuduysan onaylayabilirsin."
+      : "Bu güncellemede dikkat gerektiren bulgular var. Diff'i ve bulguları okuduysan onaylayabilirsin.";
+  const needType = status === "danger" || status === "warning";
+  const ok = await confirmDialog(`${name} onaylansın mı?`,
+    `<p style="margin:0">${warn}</p>${needType ? `<label class="field"><span>Onaylamak için paket adını yaz: <b>${esc(name)}</b></span><input class="input" id="confirm-input" autocomplete="off"></label>` : ""}
+     <p class="help">Onay yalnızca şu an incelenen commit için geçerlidir; paket yeniden değişirse onay düşer.</p>`,
+    needType ? () => $("#confirm-input").value.trim() === name : null);
+  if (!ok) return;
+  await api("/api/approve", { name, commit, confirm: needType ? name : undefined });
+  toast(`${name} onaylandı`);
+  await refresh();
+}
+
+function confirmDialog(title, html, validate) {
+  return new Promise((resolve) => {
+    const dlg = $("#dlg-confirm");
+    $("#confirm-title").textContent = title;
+    $("#confirm-body").innerHTML = html;
+    const okBtn = $("#confirm-ok");
+    const check = () => (okBtn.disabled = validate ? !validate() : false);
+    check();
+    dlg.addEventListener("input", check);
+    dlg.addEventListener("close", function onClose() {
+      dlg.removeEventListener("close", onClose);
+      dlg.removeEventListener("input", check);
+      resolve(dlg.returnValue === "ok");
+    });
+    dlg.returnValue = "";
+    dlg.showModal();
+  });
+}
+
+async function startUpdate() {
+  const r = ui.data.report;
+  const aur = r.aur.filter((a) => a.target && isSelected(a)).map((a) => a.name);
+  const list = aur.length ? `<p style="margin:0">AUR: <b>${aur.map(esc).join(", ")}</b></p>` : "";
+  const ok = await confirmDialog("Güncelleme başlatılsın mı?",
+    `<p style="margin:0">${r.repo.length} resmi depo paketi${aur.length ? ` ve ${aur.length} AUR paketi` : ""} güncellenecek.</p>${list}
+     <p class="help">Bir Konsole penceresi açılır. sudo parolanı orada girersin; Timeshift işlem başlamadan anlık görüntü alır.</p>`);
+  if (!ok) return;
+  const res = await api("/api/update", { aur, news_ack: ui.newsAck });
+  toast(`Güncelleme Konsole'da başladı${res.aur.length ? ` (AUR: ${res.aur.join(", ")})` : ""}`);
+  await refresh();
+}
+
+// ---------- settings ----------
+async function loadSettings() {
+  ui.settings = await api("/api/settings");
+}
+
+$("#btn-settings").addEventListener("click", async () => {
+  try {
+    await loadSettings();
+    renderSettings();
+    $("#settings-msg").textContent = "";
+    $("#dlg-settings").showModal();
+  } catch (e) { toast(e.message, true); }
+});
+
+const TYPE_LABEL = { "claude-code": "Claude Code (kurulu CLI, abonelik)", anthropic: "Anthropic API (API anahtarı)", openai: "OpenAI uyumlu (LiteLLM, Ollama, OpenRouter…)" };
+
+function renderSettings() {
+  const s = ui.settings;
+  const body = $("#settings-body");
+  body.innerHTML = `
+    <fieldset><legend>Genel</legend>
+      <div class="field-row">
+        <label class="field"><span>AUR bekleme süresi (gün)</span><input class="input" type="number" min="0" max="30" name="hold_days" value="${s.hold_days}"></label>
+        <label class="field"><span>Otomatik kontrol sıklığı</span><select class="input" name="schedule">
+          ${[["daily", "Günde bir (09:00)"], ["twice", "Günde iki (09:00, 19:00)"], ["weekly", "Haftada bir (Pazartesi)"]].map(([v, l]) => `<option value="${v}" ${s.schedule === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <label class="field"><span>Pano penceresi</span><select class="input" name="browser">
+          <option value="chromium-app" ${s.browser === "chromium-app" ? "selected" : ""}>Chromium uygulama penceresi</option>
+          <option value="default" ${s.browser === "default" ? "selected" : ""}>Varsayılan tarayıcı</option></select></label>
+      </div>
+      <label class="check"><input type="checkbox" name="notifications" ${s.notifications ? "checked" : ""}> Kontrol bitince masaüstü bildirimi göster</label>
+      <p class="help">Bekleme süresi: yeni bir AUR sürümü, AUR'a yüklendikten bu kadar gün sonra otomatik olarak güncellemeye eklenir. Zararlı paketler genellikle ilk 1-3 gün içinde fark edilip kaldırılır. Süreyi beklemeden elle onaylayabilirsin.</p>
+    </fieldset>
+    <fieldset><legend>Yapay zekâ incelemesi</legend>
+      <label class="check"><input type="checkbox" name="review_enabled" ${s.review.enabled ? "checked" : ""}> AUR diff'lerini yapay zekâya inceletir</label>
+      <div class="field-row">
+        <label class="field"><span>Kullanılacak sağlayıcı</span><select class="input" name="active_provider">
+          ${s.providers.map((p) => `<option value="${esc(p.id)}" ${p.id === s.review.active_provider ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
+        <label class="field"><span>En fazla diff boyutu (karakter)</span><input class="input" type="number" name="max_diff_chars" value="${s.review.max_diff_chars}"></label>
+        <label class="field"><span>Zaman aşımı (saniye)</span><input class="input" type="number" name="timeout_seconds" value="${s.review.timeout_seconds}"></label>
+      </div>
+      <p class="help">İnceleme yapılamazsa (hata, zaman aşımı, ret) paket "İncelenmedi" sayılır ve onayın olmadan kurulmaz.</p>
+    </fieldset>
+    <fieldset><legend>Sağlayıcılar</legend>
+      <div id="providers" style="display:grid;gap:10px">${s.providers.map(providerForm).join("")}</div>
+      <div><button type="button" class="btn sm" id="add-provider">+ Sağlayıcı ekle</button></div>
+      <p class="help">API anahtarları ayarlar dosyasına değil, masaüstünün anahtar kasasına (Secret Service) kaydedilir. Anahtarı kaydettikten sonra "Dene" ile bağlantıyı sına.</p>
+    </fieldset>`;
+  $("#add-provider").onclick = () => {
+    const id = "p" + Math.random().toString(36).slice(2, 7);
+    $("#providers").insertAdjacentHTML("beforeend", providerForm({ id, name: "Yeni sağlayıcı", type: "openai", model: "", base_url: "http://localhost:4000/v1", json_mode: "json_schema", _new: true }));
+  };
+}
+
+function providerForm(p) {
+  const keyed = p.type === "anthropic" || p.type === "openai";
+  return `<div class="provider" data-pid="${esc(p.id)}">
+    <div class="provider-head">
+      <input class="input" data-f="name" value="${esc(p.name)}" style="font-weight:600;width:200px" aria-label="Ad">
+      <select class="input" data-f="type">${Object.entries(TYPE_LABEL).map(([v, l]) => `<option value="${v}" ${p.type === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <span class="spacer"></span>
+      <code class="muted small">${esc(p.id)}</code>
+      <button type="button" class="btn sm ghost" data-pact="test">Dene</button>
+      <button type="button" class="icon-btn" data-pact="remove" aria-label="Sil">🗑</button>
+    </div>
+    <div class="field-row">
+      <label class="field"><span>Model</span><input class="input" data-f="model" value="${esc(p.model || "")}" placeholder="${p.type === "claude-code" ? "sonnet, opus, haiku…" : p.type === "anthropic" ? "claude-opus-5-5" : "model adı"}"></label>
+      ${p.type !== "claude-code" ? `<label class="field"><span>Adres${p.type === "anthropic" ? " (boş = api.anthropic.com)" : ""}</span><input class="input" data-f="base_url" value="${esc(p.base_url || "")}" placeholder="${p.type === "openai" ? "http://localhost:4000/v1" : ""}"></label>` : ""}
+      ${p.type === "anthropic" ? `<label class="field"><span>Effort</span><select class="input" data-f="effort">${["low", "medium", "high", "xhigh", "max", ""].map((e) => `<option value="${e}" ${(p.effort || "") === e ? "selected" : ""}>${e || "gönderme"}</option>`).join("")}</select></label>` : ""}
+      ${p.type === "openai" ? `<label class="field"><span>JSON kipi</span><select class="input" data-f="json_mode">${[["json_schema", "json_schema (katı şema)"], ["json_object", "json_object"], ["none", "yok (yalnızca istem)"]].map(([v, l]) => `<option value="${v}" ${(p.json_mode || "json_schema") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}
+    </div>
+    ${keyed ? `<div class="field-row" style="align-items:end">
+      <label class="field"><span>API anahtarı ${p.has_key ? "· <b>kasada kayıtlı ✓</b>" : p.type === "openai" ? "· isteğe bağlı" : "· girilmedi"}</span><input class="input" type="password" data-key placeholder="${p.has_key ? "değiştirmek için yeni anahtar gir" : "anahtarı yapıştır"}" autocomplete="off"></label>
+      <div style="display:flex;gap:8px"><button type="button" class="btn sm" data-pact="save-key">Anahtarı kaydet</button>${p.has_key ? `<button type="button" class="btn sm ghost" data-pact="clear-key">Anahtarı sil</button>` : ""}</div>
+    </div>` : `<p class="help">Kurulu <code>claude</code> komutunu araçsız modda çalıştırır; Claude aboneliğinin kotasından harcar.</p>`}
+    ${p.type === "anthropic" ? `<p class="help">Opus 5.5, Sonnet 5.5 ve Fable modellerinde, güvenlik sınıflandırıcısı incelemeyi reddederse istek otomatik olarak başka bir modelle yeniden denenir (server-side fallback).</p>` : ""}
+    <div class="test-result" hidden></div>
+  </div>`;
+}
+
+function collectSettings() {
+  const f = $("#settings-form");
+  const s = structuredClone(ui.settings);
+  s.hold_days = Number(f.hold_days.value);
+  s.schedule = f.schedule.value;
+  s.browser = f.browser.value;
+  s.notifications = f.notifications.checked;
+  s.review.enabled = f.review_enabled.checked;
+  s.review.active_provider = f.active_provider.value;
+  s.review.max_diff_chars = Number(f.max_diff_chars.value);
+  s.review.timeout_seconds = Number(f.timeout_seconds.value);
+  s.providers = [...document.querySelectorAll("#providers .provider")].map((el) => {
+    const p = { id: el.dataset.pid };
+    el.querySelectorAll("[data-f]").forEach((i) => (p[i.dataset.f] = i.value));
+    return p;
+  });
+  return s;
+}
+
+$("#settings-body").addEventListener("change", (ev) => {
+  // Re-render a provider card when its type changes so the right fields show.
+  const sel = ev.target.closest('[data-f="type"]');
+  if (!sel) return;
+  const card = sel.closest(".provider");
+  const p = collectSettings().providers.find((x) => x.id === card.dataset.pid);
+  const defaults = { anthropic: { model: "claude-opus-5-5", effort: "medium", base_url: "" }, openai: { base_url: "http://localhost:4000/v1", json_mode: "json_schema" }, "claude-code": { model: "sonnet" } };
+  card.outerHTML = providerForm({ ...p, ...defaults[p.type], name: p.name });
+  if (ev.target.name === "active_provider") return;
+});
+
+$("#settings-body").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("[data-pact]");
+  if (!b) return;
+  const card = b.closest(".provider");
+  const pid = card.dataset.pid;
+  const out = card.querySelector(".test-result");
+  const show = (msg) => { out.hidden = false; out.textContent = msg; };
+  try {
+    if (b.dataset.pact === "remove") {
+      if (document.querySelectorAll("#providers .provider").length <= 1) return toast("En az bir sağlayıcı kalmalı", true);
+      card.remove();
+    } else if (b.dataset.pact === "save-key" || b.dataset.pact === "clear-key") {
+      const value = b.dataset.pact === "save-key" ? card.querySelector("[data-key]").value : "";
+      if (b.dataset.pact === "save-key" && !value) return toast("Önce anahtarı yapıştır", true);
+      await saveSettings(false);  // provider must exist server-side first
+      await api("/api/secret", { provider: pid, value });
+      await loadSettings();
+      renderSettings();
+      toast(value ? "Anahtar kasaya kaydedildi" : "Anahtar silindi");
+    } else if (b.dataset.pact === "test") {
+      show("Deneniyor… (bir örnek diff gönderiliyor)");
+      b.disabled = true;
+      const res = await api("/api/test-provider", { provider: pid, settings: collectSettings() });
+      b.disabled = false;
+      show(res.status === "ok"
+        ? `✓ Çalışıyor: ${res.model || ""} · ${res.seconds} sn · karar "${res.verdict}"\n${res.summary}`
+        : `✕ ${res.error}`);
+    }
+  } catch (e) {
+    b.disabled = false;
+    show("✕ " + e.message);
+  }
+});
+
+async function saveSettings(close = true) {
+  const saved = await api("/api/settings", collectSettings());
+  ui.settings = saved.settings;
+  $("#settings-msg").textContent = "Kaydedildi" + (saved.schedule === "güncellendi" ? " · zamanlayıcı güncellendi" : "");
+  if (close) {
+    $("#dlg-settings").close();
+    toast("Ayarlar kaydedildi");
+    render();
+  }
+}
+
+$("#btn-save-settings").addEventListener("click", async (ev) => {
+  ev.preventDefault();
+  try { await saveSettings(true); } catch (e) { $("#settings-msg").textContent = e.message; toast(e.message, true); }
+});
+
+// ---------- boot ----------
+loadSettings().catch(() => {}).finally(refresh);

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Güncelleme Bekçisi başlatıcısı: projenin sanal ortamındaki Python ile çalışır.
+here=$(dirname "$(readlink -f "$0")")
+root=$(dirname "$here")
+cd "$root" || exit 1
+exec "$root/.venv/bin/python" -m aug "$@"
