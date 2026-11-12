@@ -194,6 +194,7 @@ function renderPlan(d, r) {
     let why;
     if (a.approved) why = "Elle onaylandı";
     else if (a.auto_ok) why = "İnceleme temiz, bekleme süresi doldu";
+    else if (srcPending(a)) why = "Kaynak dosyalar hâlâ iniyor; incelenince seçilebilir (elle onaylayabilirsin)";
     else if (a.status === "clean" && a.held) why = `Bekleme süresinde: ${until(a.hold_until)} sonra hazır (${fmtDate(a.hold_until)})`;
     else if (a.status === "unreviewed") why = "İncelenmedi; diff'e bakıp elle onaylaman gerekiyor";
     else why = "Bulgular var; incelemeden onaylanamaz";
@@ -275,6 +276,7 @@ function renderPkg(a, reviewing, r) {
       ${verdict}
       ${renderFindings(a.findings)}
       ${renderDeps(a.new_aur_deps, a.name)}
+      ${renderSourcesLine(a.sources)}
       <div class="meta-grid">
         <span>Bakımcı: <b>${esc(a.maintainer || "yok")}</b>${a.known_maintainer && a.known_maintainer !== a.maintainer ? ` (önceden ${esc(a.known_maintainer)})` : ""}</span>
         <span>Oy: <b>${a.votes ?? "?"}</b></span>
@@ -299,7 +301,65 @@ function renderPkg(a, reviewing, r) {
         ${ui.openDetails.has(dk) ? renderDiff(a.diff.text) : ""}
       </div>
     </details>
+    ${renderSources(a.sources, `src:${keyOf(a)}`)}
   </article>`;
+}
+
+const srcPending = (a) => (a.sources?.sources || []).some((s) => s.status === "deferred");
+const fmtSize = (n) => n == null ? "?" : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
+const SRC_STATUS = {
+  ok: "incelendi", "in-repo": "AUR deposunda (diff'te)", vcs: "git/svn deposu, önceden incelenemez",
+  deferred: "iniyor, sonraki kontrolde", "too-large": "boyut sınırını aşıyor", "download-failed": "indirilemedi",
+  unsupported: "desteklenmeyen adres", skipped: "atlandı",
+};
+const CAT_TR = { persist: "kalıcılık", system: "sistem", "deb-script": "deb betiği", build: "derleme", script: "betik", text: "metin" };
+
+function renderSourcesLine(src) {
+  if (!src) return "";
+  if (src.error) return `<div class="srcline muted small">Kaynak dosyalar incelenemedi: ${esc(src.error)}</div>`;
+  const remote = (src.sources || []).filter((s) => !["in-repo"].includes(s.status));
+  if (!remote.length) return `<div class="srcline muted small">İndirilecek dış kaynak yok; paketin tüm dosyaları yukarıdaki diff'te.</div>`;
+  const ok = remote.filter((s) => s.status === "ok");
+  const bad = remote.filter((s) => s.verified === false).length;
+  const parts = [`${ok.length}/${remote.length} kaynak dosya indirilip incelendi`];
+  if (ok.length) parts.push(bad ? `<b class="warn-text">${bad} dosyanın sağlama toplamı tutmuyor</b>` : ok.every((s) => s.verified) ? "sağlama toplamları doğrulandı" : "bazı dosyaların sabitlenmiş sağlama toplamı yok");
+  const sm = src.summaries || [];
+  if (sm.some((x) => x.baseline)) {
+    const t = sm.reduce((acc, x) => ({ a: acc.a + (x.added || 0), r: acc.r + (x.removed || 0), c: acc.c + (x.changed || 0) }), { a: 0, r: 0, c: 0 });
+    parts.push(`kurulu sürüme göre ${t.a} dosya eklendi, ${t.r} silindi, ${t.c} değişti`);
+  } else if (ok.length) parts.push("karşılaştırılacak eski sürüm yok, yalnızca içerik tarandı");
+  return `<div class="srcline small">📦 ${parts.join(" · ")}</div>`;
+}
+
+function renderSources(src, dk) {
+  if (!src || !(src.sources || []).some((s) => s.status !== "in-repo")) return "";
+  const open = ui.openDetails.has(dk);
+  const rows = src.sources.filter((s) => s.status !== "in-repo").map((s) => {
+    const sm = (src.summaries || []).find((x) => x.file === s.file);
+    const ver = s.verified === true ? `<span class="badge ok">✓ sağlama toplamı</span>` : s.verified === false ? `<span class="badge danger">sağlama toplamı tutmuyor</span>` : s.status === "ok" ? `<span class="badge neutral">sağlama toplamı yok (SKIP)</span>` : "";
+    let detail = "";
+    if (sm) {
+      detail = `<div class="muted small">${esc(sm.format)} · ${fmtSize(sm.size)} · ${sm.members} dosya · ${sm.elf} derlenmiş ikili${sm.root ? ` · kök: ${esc(sm.root)}` : ""}</div>`;
+      if (sm.baseline) {
+        detail += `<div class="small">Kurulu sürümdeki <code>${esc(sm.old_file)}</code> (${fmtSize(sm.old_size)}) ile: <b>${sm.added}</b> eklendi, <b>${sm.removed}</b> silindi, <b>${sm.changed}</b> değişti${sm.size_only ? " <span class='muted'>(bu biçimde yalnızca boyutlar karşılaştırılabildi)</span>" : ""}</div>`;
+        const list = (label, arr) => arr.length ? `<div class="small"><span class="muted">${label}:</span> ${arr.map((p) => `<code>${esc(p)}</code>`).join(" ")}</div>` : "";
+        detail += list("Eklenenler", sm.added_list) + list("Değişenler", sm.changed_list) + list("Silinenler", sm.removed_list);
+      } else {
+        detail += `<div class="small muted">Kurulu sürümün kaynağı karşılaştırma için elde yok; içerik yalnızca tarandı.</div>`;
+      }
+      if (sm.notable.length) detail += `<div class="small"><span class="muted">Sisteme yerleşen dosyalar:</span> ${sm.notable.map((n) => `<code>${esc(n.path)}</code> <span class="muted">(${CAT_TR[n.cat] || n.cat})</span>`).join(" ")}</div>`;
+      if (open && sm.diffs.length) detail += sm.diffs.map((d) => `<div class="small"><b>${esc(d.path)}</b> <span class="muted">(${CAT_TR[d.cat] || d.cat || "metin"})</span></div>${renderDiff(d.diff)}`).join("");
+    }
+    return `<div class="srcfile"><div><b>${esc(s.file)}</b> <span class="muted small">${esc(SRC_STATUS[s.status] || s.status)}${s.error ? `: ${esc(s.error)}` : ""}</span> ${ver}</div>
+      <div class="muted small url">${esc(s.url)}</div>${detail}</div>`;
+  }).join("");
+  return `<details class="more" data-key="${esc(dk)}" ${open ? "open" : ""}>
+    <summary>Kaynak dosyaların içini göster</summary>
+    <div class="more-body">
+      <p class="help" style="margin:0">Yeni sürümün indirdiği dosyalar, kurulmadan önce hiçbir şey çalıştırılmadan açılıp incelendi. Sağlama toplamı doğrulanan dosyalar saklanır ve güncellemede yay'a verilir; ikinci kez indirilmez.</p>
+      ${rows}
+    </div>
+  </details>`;
 }
 
 function renderVerdict(llm) {
@@ -344,6 +404,8 @@ function renderDep(d, parent) {
       <summary>Paketin tamamını göster (${d.diff.chars.toLocaleString("tr-TR")} karakter)</summary>
       <div class="more-body">${ui.openDetails.has(dk) ? renderDiff(d.diff.text) : ""}</div>
     </details>
+    ${renderSourcesLine(d.sources)}
+    ${renderSources(d.sources, `src:${dk}`)}
     ${renderDeps(d.deps, parent)}
   </div>`;
 }
@@ -765,6 +827,15 @@ function renderSettings() {
       </div>
       <p class="help">İnceleme yapılamazsa (hata, zaman aşımı, ret) paket "İncelenmedi" sayılır ve onayın olmadan kurulmaz.</p>
     </fieldset>
+    <fieldset><legend>Kaynak inceleme</legend>
+      <label class="check"><input type="checkbox" name="src_enabled" ${s.sources.enabled ? "checked" : ""}> AUR güncellemelerinin indirdiği dosyaları (tarball, .deb, AppImage…) kurulmadan önce indirip içini incele</label>
+      <label class="check"><input type="checkbox" name="src_baseline" ${s.sources.baseline ? "checked" : ""}> Bir paket için ilk kez: kurulu sürümün kaynaklarını da indirip karşılaştır</label>
+      <div class="field-row">
+        <label class="field"><span>En büyük dosya (MB)</span><input class="input" type="number" min="1" max="4096" name="src_max_file_mb" value="${s.sources.max_file_mb}"></label>
+        <label class="field"><span>Kontrol başına indirme süresi (dakika)</span><input class="input" type="number" min="1" max="240" name="src_time_budget" value="${s.sources.time_budget_minutes}"></label>
+      </div>
+      <p class="help">Hiçbir dosya çalıştırılmaz ya da diske açılmaz; arşivler bellekte okunur. Süre dolarsa indirme bir sonraki kontrolde kaldığı yerden sürer; inceleme bitene kadar paket otomatik seçilmez. Sağlama toplamı doğrulanan dosyalar saklanıp güncellemede yay'a verilir, ikinci kez indirilmez.</p>
+    </fieldset>
     <fieldset><legend>Güvenlik açıkları</legend>
       <label class="check"><input type="checkbox" name="auto_analyze" ${s.security.auto_analyze ? "checked" : ""}> Her kontrolde etkin açıkları yapay zekâya otomatik değerlendirt (eski ve düzeltilmiş kayıtlar elle)</label>
       <div class="field-row" style="align-items:end">
@@ -823,6 +894,8 @@ function collectSettings() {
   s.review.max_diff_chars = Number(f.max_diff_chars.value);
   s.review.timeout_seconds = Number(f.timeout_seconds.value);
   s.security = { auto_analyze: f.auto_analyze.checked, nvd_budget_seconds: Number(f.nvd_budget_seconds.value) };
+  s.sources = { enabled: f.src_enabled.checked, baseline: f.src_baseline.checked,
+                max_file_mb: Number(f.src_max_file_mb.value), time_budget_minutes: Number(f.src_time_budget.value) };
   s.providers = [...document.querySelectorAll("#providers .provider")].map((el) => {
     const p = { id: el.dataset.pid };
     el.querySelectorAll("[data-f]").forEach((i) => (p[i.dataset.f] = i.value));

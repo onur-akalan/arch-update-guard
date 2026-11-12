@@ -7,7 +7,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from . import aur, cve, deps, feeds, review, rules, runtime, state, system, vulnai
+from . import aur, cve, deps, feeds, review, rules, runtime, sources, state, system, vulnai
 from .config import REPORT_FILE, RUNTIME_DIR, atomic_write_json, get_secret, load_settings, read_json
 
 log = logging.getLogger("aug")
@@ -56,6 +56,7 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
     if not update:
         # Still record the maintainer baseline for later comparison.
         st["maintainers"].setdefault(pkgbase, meta.get("Maintainer"))
+        sources.prune_downloads(pkgbase, set())  # installed: yay no longer needs the kept downloads
         return None
 
     repo = aur.sync_mirror(pkgbase)
@@ -71,18 +72,27 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
                           new_info=new_info, commits=commits, prev_authors=aur.previous_authors(repo, base),
                           meta=meta, known_maintainer=known)
 
+    src = inspect_sources(pkgbase, name, repo, base, target, settings)
+    if src:
+        findings.extend(src["findings"])
+    review_commit = f"{target}+src{sources.fingerprint(src)}"
+
     llm = None
     rcfg = settings["review"]
     if rcfg["enabled"]:
-        key = state.review_key(pkgbase, target, rcfg["active_provider"])
+        key = state.review_key(pkgbase, review_commit, rcfg["active_provider"])
         keep_keys.add(key)
         cached = st["reviews"].get(key)
         if cached and cached.get("status") == "ok":
             llm = cached
+        elif sources.pending(src):
+            llm = {"status": "error", "error": "Kaynak dosyalar hâlâ iniyor; yapay zekâ incelemesi indirme "
+                                              "bitince yapılacak."}
         else:
             ctx = {"pkgname": name, "pkgbase": pkgbase, "installed": installed, "new_version": meta["Version"],
                    "meta": meta, "has_base": bool(base), "commits": commits, "static_findings": findings,
-                   "stat": d["stat"], "diff": d["text"], "diff_chars": d["chars"], "truncated": d["truncated"]}
+                   "stat": d["stat"], "diff": d["text"], "diff_chars": d["chars"], "truncated": d["truncated"],
+                   "sources": src}
             llm = review.review(ctx, settings)
             st["reviews"][key] = llm
 
@@ -114,6 +124,8 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
         "commits": commits,
         "base_source": base_source,
         "target": target,
+        "review_commit": review_commit,
+        "sources": src,
         "approval_key": akey,
         "new_aur_deps": new_aur_deps,
         "new_repo_deps": new_repo_deps,
@@ -127,9 +139,24 @@ def _aur_item(name: str, installed: str, meta: dict | None, settings: dict, st: 
         "hold_until": hold_until,
         "held": held,
         "approved": approved,
-        "auto_ok": status == "clean" and not held,
+        "auto_ok": status == "clean" and not held and not sources.pending(src),
         "aur_url": f"{aur.AUR}/packages/{name}",
     }
+
+
+def inspect_sources(pkgbase: str, name: str, repo, base: str | None, target: str, settings: dict) -> dict | None:
+    """Download and inspect the update's source files; never raises."""
+    if not settings["sources"]["enabled"]:
+        return None
+    _progress(f"AUR: {name} kaynak dosyaları indiriliyor ve inceleniyor")
+    try:
+        return sources.review(pkgbase, name, target, aur.srcinfo_text(repo, target), base,
+                              aur.srcinfo_text(repo, base), settings)
+    except Exception as e:
+        log.exception("sources %s", name)
+        return {"sources": [], "summaries": [], "baseline": False, "error": f"{type(e).__name__}: {e}"[:300],
+                "findings": [rules._f(rules.INFO, "source-not-inspected",
+                                      "Kaynak dosyalar incelenemedi", f"{type(e).__name__}: {e}"[:300])]}
 
 
 def run(settings: dict | None = None) -> dict:
@@ -172,6 +199,7 @@ def _run(settings: dict) -> dict:
         metas = None
         errors.append(f"AUR'a ulaşılamadı: {e}")
     if metas is not None:
+        sources.set_deadline(settings["sources"]["time_budget_minutes"] * 60)
         names = sorted(foreign)
         for i, name in enumerate(names, 1):
             _progress(f"AUR: {name}", i, len(names))

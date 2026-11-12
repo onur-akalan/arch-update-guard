@@ -11,7 +11,7 @@ import re
 import urllib.parse
 import json
 
-from . import aur, review, rules, state
+from . import aur, review, rules, sources, state
 from .feeds import http_get
 from .system import run
 
@@ -90,6 +90,11 @@ def _review_dep(parent: str, name: str, settings: dict, st: dict, keep_keys: set
     findings = rules.scan(pkgname=pkg, diff_text=d["text"], has_base=False, old_info={}, new_info=info,
                           commits=commits, prev_authors=set(), meta=meta, known_maintainer=None)
     findings = [f for f in findings if f["code"] != "no-base"]
+    from .check import inspect_sources  # late import: check imports this module
+    src = inspect_sources(meta["PackageBase"], pkg, repo, None, target, settings)
+    if src:
+        findings.extend(src["findings"])
+    review_commit = f"{target}+src{sources.fingerprint(src)}"
     if len(providers) > 1:
         findings.append(rules._f(rules.INFO, "multiple-providers",
                                  f"'{name}' birden fazla AUR paketi tarafından sağlanıyor; yay hangisini kuracağını soracak",
@@ -98,7 +103,7 @@ def _review_dep(parent: str, name: str, settings: dict, st: dict, keep_keys: set
     llm = None
     rcfg = settings["review"]
     if rcfg["enabled"]:
-        key = state.review_key(meta["PackageBase"], target, rcfg["active_provider"])
+        key = state.review_key(meta["PackageBase"], review_commit, rcfg["active_provider"])
         keep_keys.add(key)
         cached = st["reviews"].get(key)
         if cached and cached.get("status") == "ok":
@@ -107,7 +112,7 @@ def _review_dep(parent: str, name: str, settings: dict, st: dict, keep_keys: set
             ctx = {"pkgname": pkg, "pkgbase": meta["PackageBase"], "installed": "(not installed)",
                    "new_version": meta["Version"], "meta": meta, "has_base": False, "commits": commits,
                    "static_findings": findings, "stat": d["stat"], "diff": d["text"], "diff_chars": d["chars"],
-                   "truncated": d["truncated"],
+                   "truncated": d["truncated"], "sources": src,
                    "note": f"This package is not installed yet. It is a NEW dependency that the update of "
                            f"'{parent}' would pull in and build automatically. Review the whole package."}
             llm = review.review(ctx, settings)
@@ -123,7 +128,7 @@ def _review_dep(parent: str, name: str, settings: dict, st: dict, keep_keys: set
 
     return {**rec, "name": pkg, "pkgbase": meta["PackageBase"], "version": meta["Version"], "target": target,
             "status": combine_status(findings, llm, [n["status"] for n in nested]),
-            "findings": findings, "llm": llm, "diff": d, "commits": commits,
+            "findings": findings, "llm": llm, "diff": d, "commits": commits, "sources": src,
             "maintainer": meta.get("Maintainer"), "votes": meta.get("NumVotes"),
             "first_submitted": int(meta.get("FirstSubmitted") or 0), "last_modified": int(meta["LastModified"]),
             "aur_url": f"{aur.AUR}/packages/{pkg}", "deps": nested, "repo_deps": nested_repo}

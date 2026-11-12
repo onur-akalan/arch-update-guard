@@ -8,6 +8,7 @@ Arch Linux için yerel bir güncelleme panosu. Resmi depo ve AUR güncellemeleri
 |---|---|---|
 | Resmi depo güncellemeleri | `checkupdates` (geçici veritabanı, root gerekmez) | Hepsi birlikte güncellenir; Arch kısmi güncellemeyi desteklemez. |
 | AUR güncellemeleri | AUR RPC + paket git depoları | Kurulu sürümün commit'i ile yeni commit arasındaki diff incelenir. |
+| Kaynak dosyalar | AUR güncellemesinin indirdiği tarball, .deb, AppImage, tekil dosyalar | Yeni sürümün kaynakları indirilir, sağlama toplamı doğrulanır ve hiçbir şey çalıştırılmadan içi okunur. Kurulu sürümün kaynaklarıyla karşılaştırılır: eklenen/silinen/değişen dosyalar, otomatik çalışma noktaları (autostart, systemd, cron, pacman kancası, ld.so.preload), setuid dosyalar, gizli çalıştırılabilirler, kaynak koda eklenen derlenmiş ikililer, kurulum ve derleme betiklerinin diff'i. |
 | İnceleme, katman 1 | Sabit kurallar (`aug/rules.py`) | Her zaman çalışır. Yapay zekâ kararı bir kural bulgusunu temizleyemez. |
 | İnceleme, katman 2 | Seçtiğin yapay zekâ sağlayıcısı | Hata, zaman aşımı ya da ret durumunda paket "İncelenmedi" sayılır. |
 | Arch haberleri | archlinux.org/feeds/news | Son güncellemenden sonra çıkan haberi okuduğunu onaylamadan güncelleme başlamaz. |
@@ -26,6 +27,14 @@ AUR paketleri şu kurallarla güncellemeye girer:
 - **İncelenmemiş, dikkat ya da tehlike** durumundaki paketler yalnızca elle onaylanabilir. Dikkat ve tehlike için paket adını yazman gerekir.
 - **Yeni bir AUR bağımlılığı getiren** güncelleme her zaman elle onay ister; bağımlılık temiz olsa bile.
 - **Onay commit'e bağlıdır.** Onay, paketin ve getirdiği yeni AUR bağımlılıklarının incelenen commit'lerini kapsar; herhangi biri AUR'da değişirse onay düşer. Güncelleme başlamadan hemen önce ve betik içinde yay çalışmadan önce bu commit'ler yeniden kontrol edilir.
+
+Kaynak inceleme hakkında:
+
+- **Hiçbir şey çalıştırılmaz ya da diske açılmaz.** tar, zip ve .deb Python'un standart kütüphanesiyle bellekte okunur. AppImage, rpm ve iso yalnızca `7z` ile listelenir ve seçili dosyalar `7z x -so` ile okunur. Bu biçimlerde dosyalar yalnızca boyutla karşılaştırılabilir.
+- **Karşılaştırma tabanı:** her incelemenin özeti commit'e bağlı olarak saklanır (`~/.local/share/arch-update-guard/sources/`). Güncellemeden sonra kurulu sürümün özeti bir sonraki güncellemenin tabanı olur. Bir paket ilk kez incelenirken kurulu sürümün kaynakları da bir kez indirilir (Ayarlar'dan kapatılabilir).
+- **İndirme süresi sınırlıdır.** Süre dolunca indirme bir sonraki kontrolde kaldığı yerden devam eder; inceleme bitene kadar paket otomatik seçilmez ve yapay zekâ incelemesi bekletilir.
+- **Aynı dosya iki kez inmez.** Sağlama toplamı doğrulanan dosyalar `~/.cache/arch-update-guard/sources/` altında saklanır; güncelleme betiği bunları yay'ın derleme klasörüne kopyalar. makepkg sağlama toplamını yine kendisi doğrular. Paket kurulduktan sonraki kontrolde bu kopyalar silinir.
+- **Sınırlar:** git/svn kaynakları derleme anında çekildiği için önceden incelenemez. Sağlama toplamı `SKIP` olan dosyalar incelemeden sonra sunucuda değişebilir. Bir .deb'in kendi kurulum betikleri (postinst) makepkg tarafından çalıştırılmaz; yine de gösterilir. Kaynakların tamamı değil, güvenlik açısından önemli dosyaları ve değişiklik listesi incelenir; xz olayındaki gibi derinlere gizlenmiş bir arka kapıyı bu yöntem garanti yakalamaz.
 
 Yeniden başlatma kontrolü hakkında: kullanıcı süreçleri `/proc/*/maps` içinde silinmiş kütüphane aranarak kesin olarak bulunur. root olarak çalışan sistem servislerinin belleği okunamadığı için onlar, başlama zamanı ile ikili dosyalarının ve kütüphanelerinin ait olduğu paketlerin yükseltme zamanı karşılaştırılarak tahmin edilir. Oturumu kapatacak servisler (dbus, logind, sddm…) için servis yerine bilgisayarın yeniden başlatılması önerilir.
 
@@ -65,6 +74,8 @@ Yerel modeller katı JSON şemasını desteklemiyorsa JSON kipini `json_object` 
 | `~/.config/arch-update-guard/settings.json` | Ayarlar (anahtar içermez) |
 | `~/.local/share/arch-update-guard/report.json` | Son kontrolün raporu |
 | `~/.local/share/arch-update-guard/state.json` | Onaylar, inceleme önbelleği, bakımcı geçmişi, okunan haberler |
+| `~/.local/share/arch-update-guard/sources/` | Kaynak dosya özetleri (dosya listesi, özetler, önemli metin dosyaları), commit başına |
+| `~/.cache/arch-update-guard/sources/` | İncelenmiş ve doğrulanmış kaynak dosyalar; güncellemede yay'a verilir |
 | `~/.local/share/arch-update-guard/aur/` | AUR paket depolarının yerel kopyaları (checkout yapılmaz, hiçbir şey çalıştırılmaz) |
 | `~/.local/state/arch-update-guard/aug.log` | Günlük |
 
@@ -73,4 +84,4 @@ Yerel modeller katı JSON şemasını desteklemiyorsa JSON kipini `json_object` 
 - **Sunucu yalnızca 127.0.0.1'de dinler.** Her açılışta rastgele bir erişim anahtarı üretir; anahtar olmadan gelen, `Host` başlığı tutmayan ya da `X-Requested-With: aug` başlığı taşımayan istekleri reddeder. 20 dakika boşta kalınca kapanır.
 - **AUR depoları yalnızca okunur.** git sertleştirilmiş ayarlarla (harici diff yok, hook yok, `file://` yok) çağrılır.
 - **Güncelleme betiği root olarak çalışmaz.** `sudo` ve tüm pacman/yay soruları açılan terminalde sana sorulur.
-- **Yapay zekâ incelemesi bir yardımcıdır, garanti değil.** Upstream kaynağın kendisinin ele geçirilmesini (xz olayı gibi) PKGBUILD diff'inden kimse göremez. O durumda geri dönüş yolun Timeshift anlık görüntüsüdür.
+- **Yapay zekâ incelemesi bir yardımcıdır, garanti değil.** Kaynak inceleme, arşive eklenen kalıcılık dosyalarını, betik değişikliklerini ve beklenmedik ikilileri gösterir; ama upstream kodun derinlerine ustaca gizlenmiş bir arka kapıyı (xz olayı gibi) yakalayacağının garantisi yoktur. O durumda geri dönüş yolun Timeshift anlık görüntüsüdür.

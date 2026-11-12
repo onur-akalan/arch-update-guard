@@ -16,7 +16,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, check, deps, review, schedule, state, updater, vulnai
+from . import __version__, check, deps, review, schedule, sources, state, updater, vulnai
 from .config import (SERVER_FILE, WEB_DIR, SettingsError, atomic_write_json, delete_secret, get_secret,
                      load_settings, read_json, save_settings, set_secret, validate_settings)
 
@@ -122,11 +122,11 @@ class App:
                             "Popularity": item.get("popularity"), "FirstSubmitted": item.get("first_submitted")},
                    "has_base": bool(d.get("base")), "commits": item.get("commits", []),
                    "static_findings": item.get("findings", []), "stat": d["stat"], "diff": d["text"],
-                   "diff_chars": d["chars"], "truncated": d["truncated"]}
+                   "diff_chars": d["chars"], "truncated": d["truncated"], "sources": item.get("sources")}
             res = review.review(ctx, settings, provider_id)
             pid = provider_id or settings["review"]["active_provider"]
             with state.mutate() as st:
-                st["reviews"][state.review_key(item["pkgbase"], item["target"], pid)] = res
+                st["reviews"][state.review_key(item["pkgbase"], item.get("review_commit", item["target"]), pid)] = res
             # Patch the cached report so the dashboard updates without a full check.
             fresh = check.load_report()
             for a in fresh["aur"]:
@@ -134,7 +134,7 @@ class App:
                     a["llm"] = res
                     a["status"] = deps.combine_status(a["findings"], res,
                                                       [d["status"] for d in a.get("new_aur_deps", [])])
-                    a["auto_ok"] = a["status"] == "clean" and not a.get("held")
+                    a["auto_ok"] = a["status"] == "clean" and not a.get("held") and not sources.pending(a.get("sources"))
             atomic_write_json(check.REPORT_FILE, fresh)
             return res
         finally:
@@ -168,7 +168,7 @@ def _decorate_report(report: dict | None) -> dict | None:
             ap = st["approvals"].get(a["name"])
             a["approved"] = bool(ap and ap.get("commit") == a.get("approval_key", a["target"]))
             a["held"] = now < a.get("hold_until", 0)
-            a["auto_ok"] = a["status"] == "clean" and not a["held"]
+            a["auto_ok"] = a["status"] == "clean" and not a["held"] and not sources.pending(a.get("sources"))
     return report
 
 

@@ -16,6 +16,7 @@ HOME = Path.home()
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / APP_ID
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / APP_ID
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / APP_ID
+CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / APP_ID
 RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir())) / APP_ID
 
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
@@ -38,6 +39,12 @@ DEFAULT_SETTINGS: dict = {
     "security": {
         "auto_analyze": True,      # AI-assess active (not fixed / not stale) entries during checks
         "nvd_budget_seconds": 60,  # time per check spent fetching CVE details from NVD
+    },
+    "sources": {
+        "enabled": True,     # download and inspect the source files of AUR updates
+        "max_file_mb": 400,  # larger downloads are skipped (reported, not inspected)
+        "baseline": True,    # first time: also fetch the installed version's sources to compare
+        "time_budget_minutes": 15,  # download time per check; the rest resumes on the next check
     },
     "review": {
         "enabled": True,
@@ -147,6 +154,21 @@ def validate_settings(s: dict) -> dict:
         raise SettingsError("NVD süresi bir tam sayı olmalı.")
     if not 0 <= sec["nvd_budget_seconds"] <= 900:
         raise SettingsError("NVD süresi 0 ile 900 saniye arasında olmalı.")
+    src = s["sources"]
+    src["enabled"] = bool(src["enabled"])
+    src["baseline"] = bool(src["baseline"])
+    try:
+        src["max_file_mb"] = int(src["max_file_mb"])
+    except (TypeError, ValueError):
+        raise SettingsError("Kaynak boyut sınırı bir tam sayı olmalı.")
+    if not 1 <= src["max_file_mb"] <= 4096:
+        raise SettingsError("Kaynak boyut sınırı 1 ile 4096 MB arasında olmalı.")
+    try:
+        src["time_budget_minutes"] = int(src["time_budget_minutes"])
+    except (TypeError, ValueError):
+        raise SettingsError("İndirme süresi bir tam sayı olmalı.")
+    if not 1 <= src["time_budget_minutes"] <= 240:
+        raise SettingsError("İndirme süresi 1 ile 240 dakika arasında olmalı.")
     r = s["review"]
     r["enabled"] = bool(r["enabled"])
     for key, lo, hi in (("max_diff_chars", 5000, 1_000_000), ("timeout_seconds", 20, 1800)):

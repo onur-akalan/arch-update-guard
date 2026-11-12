@@ -81,9 +81,16 @@ def has_commit(repo: Path, commit: str) -> bool:
     return run([*GIT, "-C", str(repo), "cat-file", "-e", commit + "^{commit}"]).returncode == 0
 
 
-def srcinfo_at(repo: Path, commit: str) -> dict:
+def srcinfo_text(repo: Path, commit: str | None) -> str:
+    if not commit:
+        return ""
     r = run([*GIT, "-C", str(repo), "show", f"{commit}:.SRCINFO"])
-    return parse_srcinfo(r.stdout) if r.returncode == 0 else {}
+    return r.stdout if r.returncode == 0 else ""
+
+
+def srcinfo_at(repo: Path, commit: str) -> dict:
+    text = srcinfo_text(repo, commit)
+    return parse_srcinfo(text) if text else {}
 
 
 def parse_srcinfo(text: str) -> dict:

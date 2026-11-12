@@ -129,8 +129,20 @@ def _heads(item: dict) -> list[tuple[str, str, str]]:
     return out
 
 
+def _seeds(item: dict) -> list[tuple[str, list[str]]]:
+    """(pkgbase, inspected and checksum-verified downloads) for the package and its new deps."""
+    out = []
+    for x in [item, *deps.flatten(item.get("new_aur_deps", []))]:
+        files = [s["cached"] for s in ((x.get("sources") or {}).get("sources") or []) if s.get("cached")]
+        if files and x.get("pkgbase"):
+            out.append((x["pkgbase"], files))
+    return out
+
+
 def _script(chosen: list[dict], report: dict) -> str:
     q = shlex.quote
+    seeds = "\n".join("  seed " + q(b) + " " + " ".join(q(f) for f in files)
+                       for i in chosen for b, files in _seeds(i))
     aur_checks = "\n".join(
         "check_head " + q(i["name"]) + " " + " ".join(f"{q(b)} {q(c)}" for b, c, _ in _heads(i))
         for i in chosen)
@@ -166,6 +178,18 @@ check_head() {{
   AUR_PKGS+=("$name")
 }}
 
+# seed PKGBASE FILE...: hand the source files that were already downloaded,
+# inspected and checksum-verified to yay's build dir so they are not fetched a
+# second time. makepkg verifies their checksums again before building.
+seed() {{
+  local dir="$HOME/.cache/yay/$1" f; shift
+  [[ -d "$dir/.git" ]] || return 0
+  for f; do
+    [[ -f "$f" && ! -e "$dir/${{f##*/}}" ]] && cp --reflink=auto -- "$f" "$dir/" 2>/dev/null
+  done
+  return 0
+}}
+
 bold=$'\\e[1m'; dim=$'\\e[2m'; red=$'\\e[31m'; green=$'\\e[32m'; yellow=$'\\e[33m'; off=$'\\e[0m'
 
 echo "${{bold}}=== Güncelleme Bekçisi ===${{off}}"
@@ -182,6 +206,7 @@ else
 {aur_checks or '  :'}
   if (( ${{#AUR_PKGS[@]}} )); then
     echo "  Kurulacak: ${{AUR_PKGS[*]}}"
+{seeds}
     yay -S --aur --needed --answerdiff None --answerclean None --answeredit None --removemake "${{AUR_PKGS[@]}}"
     aur_rc=$?
   else
